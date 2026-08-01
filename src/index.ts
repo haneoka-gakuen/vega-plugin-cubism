@@ -39,13 +39,20 @@ export interface CubismModelDescriptor {
    */
   readonly sourceKind: CubismModelSourceKind;
   readonly modelSource: string;
+  /** Standard model manifest when it is distinct from a direct MOC override. */
+  readonly manifestSource?: string;
+  /** Explicit low-level MOC/MOC3 source supplied by a portable descriptor. */
+  readonly mocSource?: string;
   readonly textures?: readonly string[];
   readonly physicsSource?: string;
+  readonly poseSource?: string;
+  readonly userDataSource?: string;
   readonly motions?: readonly CubismAnimationDescriptor[];
   readonly expressions?: readonly CubismAnimationDescriptor[];
   readonly pixelsPerUnit?: number;
   readonly canvasWorldHeight?: number;
   readonly defaultMotionName?: string;
+  readonly defaultExpressionName?: string;
   readonly maskBufferSize?: number;
   readonly maskBufferMaximum?: number;
   readonly maskResolutionScale?: number;
@@ -375,6 +382,419 @@ const firstBoolean = (...values: unknown[]): boolean | undefined => {
   return undefined;
 };
 
+const plainObject = (value: unknown): Record<string, unknown> =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+
+const field = (
+  source: Readonly<Record<string, unknown>>,
+  ...names: readonly string[]
+): unknown => {
+  for (const name of names) {
+    if (Object.hasOwn(source, name)) return source[name];
+  }
+  return undefined;
+};
+
+const strings = (value: unknown): readonly string[] =>
+  Array.isArray(value)
+    ? value.map((entry) => firstString(entry)).filter(Boolean)
+    : [];
+
+/** Resolve a standard manifest sidecar without assuming a browser origin. */
+const resolveManifestResource = (manifestSource: string, resource: unknown): string => {
+  const value = firstString(resource);
+  if (!value) return "";
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/u.test(value)) return value;
+
+  const opaque = /^([A-Za-z][A-Za-z0-9+.-]*:)(?!\/\/)([^?#]*)(?:[?#].*)?$/u.exec(
+    manifestSource,
+  );
+  if (opaque) {
+    if (value.startsWith("//")) return `${opaque[1]}${value}`;
+    const origin = "https://vega-cubism.invalid";
+    const base = new URL(
+      `/${opaque[2]?.replace(/^\/+/, "") ?? ""}`,
+      origin,
+    );
+    const resolved = new URL(value, base);
+    if (resolved.origin !== origin) return resolved.toString();
+    return `${opaque[1]}${resolved.pathname.replace(/^\/+/, "")}${resolved.search}${resolved.hash}`;
+  }
+
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//u.test(manifestSource)) {
+    return new URL(value, manifestSource).toString();
+  }
+
+  const origin = "https://vega-cubism.invalid";
+  const rooted = manifestSource.startsWith("/");
+  const base = new URL(rooted ? manifestSource : `/${manifestSource}`, origin);
+  const resolved = new URL(value, base);
+  if (resolved.origin !== origin) return resolved.toString();
+  const path = `${resolved.pathname}${resolved.search}${resolved.hash}`;
+  return rooted || value.startsWith("/") ? path : path.replace(/^\//u, "");
+};
+
+const cubismFileStem = (source: string): string => {
+  const path = source.split(/[?#]/u, 1)[0] ?? source;
+  const file = path.split("/").pop() || path;
+  return file.replace(/\.(?:motion3|exp3)\.json$/iu, "");
+};
+
+type CubismResourceResolver =
+  StoryCharacterResourceEnumerationContext["resources"];
+
+interface SharedCubismManifest {
+  readonly controller: AbortController;
+  readonly pending: Promise<Record<string, unknown>>;
+  waiters: number;
+  settled: boolean;
+}
+
+type CubismManifestCache = Map<string, SharedCubismManifest>;
+
+const manifestCaches = new WeakMap<CubismResourceResolver, CubismManifestCache>();
+
+const trimCubismManifestCache = (cache: CubismManifestCache): void => {
+  while (cache.size > 128) {
+    let removed = false;
+    for (const [source, shared] of cache) {
+      if (!shared.settled) continue;
+      cache.delete(source);
+      removed = true;
+      break;
+    }
+    if (!removed) return;
+  }
+};
+
+const waitForCubismManifest = (
+  shared: SharedCubismManifest,
+  cache: CubismManifestCache,
+  source: string,
+  signal: AbortSignal,
+): Promise<Record<string, unknown>> => {
+  if (signal.aborted) {
+    if (shared.waiters === 0 && !shared.settled) {
+      if (cache.get(source) === shared) cache.delete(source);
+      shared.controller.abort();
+    }
+    return Promise.reject(abortReason(signal));
+  }
+  shared.waiters += 1;
+  return new Promise<Record<string, unknown>>((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", aborted);
+      shared.waiters = Math.max(0, shared.waiters - 1);
+      callback();
+    };
+    const aborted = () =>
+      finish(() => {
+        if (shared.waiters === 0 && !shared.settled) {
+          if (cache.get(source) === shared) cache.delete(source);
+          shared.controller.abort();
+        }
+        reject(abortReason(signal));
+      });
+    signal.addEventListener("abort", aborted, { once: true });
+    shared.pending.then(
+      (value) => finish(() => resolve(value)),
+      (error: unknown) => finish(() => reject(error)),
+    );
+  });
+};
+
+const loadCubismManifest = (
+  resources: CubismResourceResolver,
+  source: string,
+  signal: AbortSignal,
+): Promise<Record<string, unknown>> => {
+  let cache = manifestCaches.get(resources);
+  if (!cache) {
+    cache = new Map();
+    manifestCaches.set(resources, cache);
+  }
+  const cached = cache.get(source);
+  if (cached) {
+    cache.delete(source);
+    cache.set(source, cached);
+    return waitForCubismManifest(cached, cache, source, signal);
+  }
+
+  const controller = new AbortController();
+  let shared!: SharedCubismManifest;
+  const pending = resources
+    .load(source, controller.signal)
+    .then((bytes) => {
+      const text = new TextDecoder().decode(bytes).replace(/^\uFEFF/u, "");
+      const manifest = JSON.parse(text) as unknown;
+      if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+        throw new TypeError(`Cubism manifest is not a JSON object: ${source}`);
+      }
+      return manifest as Record<string, unknown>;
+    })
+    .catch((cause: unknown) => {
+      if (cache?.get(source) === shared) cache.delete(source);
+      if (controller.signal.aborted) throw abortReason(controller.signal);
+      throw new Error(`Unable to inspect Cubism manifest: ${source}`, { cause });
+    })
+    .finally(() => {
+      shared.settled = true;
+      if (cache) trimCubismManifestCache(cache);
+    });
+  shared = { controller, pending, waiters: 0, settled: false };
+  cache.set(source, shared);
+  trimCubismManifestCache(cache);
+  return waitForCubismManifest(shared, cache, source, signal);
+};
+
+interface CubismManifestProjection {
+  readonly resources: readonly StoryCharacterResource[];
+  readonly motionNames: readonly string[];
+  readonly expressionNames: readonly string[];
+}
+
+const selectedAnimationNames = (
+  context: Pick<
+    StoryCharacterResourceEnumerationContext,
+    "entry" | "animationUsage"
+  >,
+  fieldName: "motions" | "expressions",
+): ReadonlySet<string> => {
+  if (!context.animationUsage) return new Set();
+  return new Set(
+    fieldName === "motions"
+      ? context.animationUsage.motions
+      : context.animationUsage.expressions,
+  );
+};
+
+const projectModel3Manifest = (
+  manifestSource: string,
+  manifest: Readonly<Record<string, unknown>>,
+  selectedMotions: ReadonlySet<string>,
+  selectedExpressions: ReadonlySet<string>,
+  includePhysics: boolean,
+): CubismManifestProjection => {
+  const references = plainObject(field(manifest, "FileReferences", "fileReferences"));
+  const resources: StoryCharacterResource[] = [];
+  const motionNames = new Set<string>();
+  const expressionNames = new Set<string>();
+  const motionFilesByName = new Map<string, string>();
+  const expressionFilesByName = new Map<string, string>();
+  const add = (
+    resource: unknown,
+    label: string,
+    kind?: StoryCharacterResource["kind"],
+    role?: StoryCharacterResource["role"],
+  ) => {
+    const source = resolveManifestResource(manifestSource, resource);
+    if (source) {
+      resources.push({
+        source,
+        label,
+        ...(kind ? { kind } : {}),
+        ...(role ? { role } : {}),
+      });
+    }
+  };
+
+  add(field(references, "Moc", "moc"), "Cubism model");
+  for (const texture of strings(field(references, "Textures", "textures"))) {
+    add(texture, "Cubism texture", "texture");
+  }
+  if (includePhysics) {
+    add(field(references, "Physics", "physics"), "Cubism physics");
+  }
+  add(field(references, "Pose", "pose"), "Cubism pose");
+  add(
+    field(references, "UserData", "userData", "userdata"),
+    "Cubism user data",
+  );
+
+  const motions = plainObject(field(references, "Motions", "motions"));
+  for (const entries of Object.values(motions)) {
+    if (!Array.isArray(entries)) continue;
+    for (const value of entries) {
+      const entry = plainObject(value);
+      const file = firstString(field(entry, "File", "file"));
+      const name = file ? cubismFileStem(file) : "";
+      if (name) {
+        motionNames.add(name);
+        motionFilesByName.set(name, file);
+      }
+    }
+  }
+  for (const [name, file] of motionFilesByName) {
+    if (selectedMotions.has(name)) {
+      add(file, "Cubism motion", undefined, "animation");
+    }
+  }
+
+  const expressions = field(references, "Expressions", "expressions");
+  if (Array.isArray(expressions)) {
+    for (const value of expressions) {
+      const entry = plainObject(value);
+      const name = firstString(field(entry, "Name", "name"));
+      const file = firstString(field(entry, "File", "file"));
+      if (name && file) {
+        expressionNames.add(name);
+        expressionFilesByName.set(name, file);
+      }
+    }
+  }
+  for (const [name, file] of expressionFilesByName) {
+    if (selectedExpressions.has(name)) {
+      add(file, "Cubism expression", undefined, "animation");
+    }
+  }
+  return {
+    resources,
+    motionNames: Object.freeze([...motionNames]),
+    expressionNames: Object.freeze([...expressionNames]),
+  };
+};
+
+const projectCubism2Manifest = (
+  manifestSource: string,
+  manifest: Readonly<Record<string, unknown>>,
+  selectedMotions: ReadonlySet<string>,
+  selectedExpressions: ReadonlySet<string>,
+  includePhysics: boolean,
+): CubismManifestProjection => {
+  const resources: StoryCharacterResource[] = [];
+  const motionNames = new Set<string>();
+  const expressionNames = new Set<string>();
+  const motionFilesByName = new Map<string, string>();
+  const expressionFilesByName = new Map<string, string>();
+  const add = (
+    resource: unknown,
+    label: string,
+    kind?: StoryCharacterResource["kind"],
+    role?: StoryCharacterResource["role"],
+  ) => {
+    const source = resolveManifestResource(manifestSource, resource);
+    if (source) {
+      resources.push({
+        source,
+        label,
+        ...(kind ? { kind } : {}),
+        ...(role ? { role } : {}),
+      });
+    }
+  };
+
+  add(field(manifest, "model", "moc"), "Cubism model");
+  for (const texture of strings(field(manifest, "textures", "Textures"))) {
+    add(texture, "Cubism texture", "texture");
+  }
+  if (includePhysics) {
+    add(field(manifest, "physics", "Physics"), "Cubism physics");
+  }
+  add(field(manifest, "pose", "Pose"), "Cubism pose");
+  add(
+    field(manifest, "userdata", "userData", "UserData"),
+    "Cubism user data",
+  );
+
+  const motions = plainObject(field(manifest, "motions", "Motions"));
+  for (const [group, entries] of Object.entries(motions)) {
+    if (!Array.isArray(entries)) continue;
+    entries.forEach((value, index) => {
+      const entry = plainObject(value);
+      const file = firstString(field(entry, "file", "File"));
+      const name = index === 0 ? group : `${group}_${index}`;
+      if (file && name) {
+        motionNames.add(name);
+        motionFilesByName.set(name, file);
+      }
+    });
+  }
+  for (const [name, file] of motionFilesByName) {
+    if (selectedMotions.has(name)) {
+      add(file, "Cubism motion", undefined, "animation");
+    }
+  }
+
+  const expressions = field(manifest, "expressions", "Expressions");
+  if (Array.isArray(expressions)) {
+    for (const value of expressions) {
+      const entry = plainObject(value);
+      const name = firstString(field(entry, "name", "Name"));
+      const file = firstString(field(entry, "file", "File"));
+      if (name && file) {
+        expressionNames.add(name);
+        expressionFilesByName.set(name, file);
+      }
+    }
+  }
+  for (const [name, file] of expressionFilesByName) {
+    if (selectedExpressions.has(name)) {
+      add(file, "Cubism expression", undefined, "animation");
+    }
+  }
+  return {
+    resources,
+    motionNames: Object.freeze([...motionNames]),
+    expressionNames: Object.freeze([...expressionNames]),
+  };
+};
+
+interface CubismAnimationCatalog {
+  readonly motions: ReadonlySet<string>;
+  readonly expressions: ReadonlySet<string>;
+}
+
+const loadCubismAnimationCatalog = async (
+  descriptor: CubismModelDescriptor,
+  resources: CubismResourceResolver,
+  signal: AbortSignal,
+): Promise<CubismAnimationCatalog> => {
+  const directMotions = new Set(
+    (descriptor.motions ?? []).map(({ name }) => name).filter(Boolean),
+  );
+  const directExpressions = new Set(
+    (descriptor.expressions ?? []).map(({ name }) => name).filter(Boolean),
+  );
+  if (descriptor.sourceKind !== "manifest" || !descriptor.manifestSource) {
+    return { motions: directMotions, expressions: directExpressions };
+  }
+  const manifest = await loadCubismManifest(
+    resources,
+    descriptor.manifestSource,
+    signal,
+  );
+  throwIfAborted(signal);
+  const emptySelection = new Set<string>();
+  const projection =
+    descriptor.version === 2
+      ? projectCubism2Manifest(
+          descriptor.manifestSource,
+          manifest,
+          emptySelection,
+          emptySelection,
+          false,
+        )
+      : projectModel3Manifest(
+          descriptor.manifestSource,
+          manifest,
+          emptySelection,
+          emptySelection,
+          false,
+        );
+  return {
+    motions: new Set([...directMotions, ...projection.motionNames]),
+    expressions: new Set([
+      ...directExpressions,
+      ...projection.expressionNames,
+    ]),
+  };
+};
+
 const standardCubismFormat = (
   entry: StoryCharacterModelContext["entry"],
 ): string => {
@@ -444,6 +864,31 @@ const disposeRendererModel = async (
   if (typeof candidate.dispose === "function") await candidate.dispose();
   else if (typeof candidate.destroy === "function") await candidate.destroy();
   else if (typeof candidate.release === "function") await candidate.release();
+};
+
+/**
+ * Standard Cubism manifests expose expression names independently from their
+ * lazily loaded bytes. Older host runtimes do not have a `hasExpression`
+ * query, so expose the manifest catalogue without importing any SDK details
+ * into the renderer. This lets renderer-ready preloading distinguish an
+ * absent authored key from a failed network/parse operation.
+ */
+const attachCubismAnimationCatalog = (
+  model: CubismRendererCharacterModel,
+  catalog: CubismAnimationCatalog,
+): CubismRendererCharacterModel => {
+  if (!model || typeof model !== "object") return model;
+  const target = model as object;
+  const nativeHasExpression = Reflect.get(target, "hasExpression", target);
+  if (typeof nativeHasExpression === "function") return model;
+  const hasExpression = (name: string): boolean =>
+    Boolean(name && catalog.expressions.has(name));
+  return new Proxy(target, {
+    get(targetModel, property) {
+      if (property === "hasExpression") return hasExpression;
+      return Reflect.get(targetModel, property, targetModel);
+    },
+  }) as CubismRendererCharacterModel;
 };
 
 const cubismAnimationCatalog = (
@@ -519,12 +964,25 @@ export const describeCubismModel = (
       ? "moc"
       : "manifest";
   const modelSource = sourceKind === "moc" ? moc || model : model;
+  const manifestSource = /(?:model3|model)\.json(?:[?#].*)?$/iu.test(model)
+    ? model
+    : sourceKind === "manifest"
+      ? model
+      : "";
+  const mocSource = moc || (sourceKind === "moc" ? modelSource : "");
   const textureValues = Array.isArray(runtime.textures)
     ? runtime.textures
     : Array.isArray(source.textures)
       ? source.textures
       : [];
   const physicsSource = firstString(runtime.physics, source.physics);
+  const poseSource = firstString(runtime.pose, source.pose);
+  const userDataSource = firstString(
+    runtime.userData,
+    runtime.userdata,
+    source.userData,
+    source.userdata,
+  );
   const motions = cubismAnimationDescriptors(entry, "motions");
   const expressions = cubismAnimationDescriptors(entry, "expressions");
   const pixelsPerUnit = firstFinite(
@@ -539,6 +997,11 @@ export const describeCubismModel = (
     profile.defaultMotionName,
     runtime.defaultMotionName,
     source.defaultMotionName,
+  );
+  const defaultExpressionName = firstString(
+    profile.defaultExpressionName,
+    runtime.defaultExpressionName,
+    source.defaultExpressionName,
   );
   const maskBufferSize = firstFinite(
     runtime.maskBufferSize,
@@ -568,6 +1031,8 @@ export const describeCubismModel = (
     version,
     sourceKind,
     modelSource,
+    ...(manifestSource ? { manifestSource } : {}),
+    ...(mocSource ? { mocSource } : {}),
     ...(textureValues.length
       ? {
           // MOC texture indices are positional. Preserve empty or malformed
@@ -578,11 +1043,14 @@ export const describeCubismModel = (
         }
       : {}),
     ...(physicsSource ? { physicsSource } : {}),
+    ...(poseSource ? { poseSource } : {}),
+    ...(userDataSource ? { userDataSource } : {}),
     ...(motions.length ? { motions } : {}),
     ...(expressions.length ? { expressions } : {}),
     ...(pixelsPerUnit !== undefined ? { pixelsPerUnit } : {}),
     ...(canvasWorldHeight !== undefined ? { canvasWorldHeight } : {}),
     ...(defaultMotionName ? { defaultMotionName } : {}),
+    ...(defaultExpressionName ? { defaultExpressionName } : {}),
     ...(maskBufferSize !== undefined ? { maskBufferSize } : {}),
     ...(maskBufferMaximum !== undefined ? { maskBufferMaximum } : {}),
     ...(maskResolutionScale !== undefined ? { maskResolutionScale } : {}),
@@ -604,87 +1072,93 @@ export const describeCubismModel = (
   };
 };
 
-/**
- * Enumerate directly addressable Cubism files from standard model fields.
- *
- * Model3 manifests may declare more nested dependencies; runtime adapters can
- * resolve those during `prepareDescriptors` without teaching Vega their
- * schema.
- */
-export const enumerateCubismResources = (
+/** Enumerate standard Cubism fields and the dependencies declared by a model manifest. */
+export const enumerateCubismResources = async (
   context: Pick<
     StoryCharacterResourceEnumerationContext,
-    "entry" | "animationUsage"
+    "entry" | "animationUsage" | "resources" | "signal"
   >,
-): readonly StoryCharacterResource[] => {
+): Promise<readonly StoryCharacterResource[]> => {
   const descriptor = describeCubismModel(context.entry);
   if (!descriptor) return [];
-  const resources: StoryCharacterResource[] = [
-    {
-      source: descriptor.modelSource,
-      label:
-        descriptor.sourceKind === "manifest"
-          ? "Cubism manifest"
-          : "Cubism model",
-    },
-  ];
-  for (const source of descriptor.textures ?? []) {
-    if (source) {
-      resources.push({ source, kind: "texture", label: "Cubism texture" });
-    }
-  }
-  if (descriptor.physicsSource) {
-    resources.push({
-      source: descriptor.physicsSource,
-      label: "Cubism physics",
-    });
-  }
-  const source = object(context.entry);
-  const runtime = object(source.runtime);
-  const profile = object(source.profile);
-  const enumerateAnimations = (
-    field: "motions" | "expressions",
-    selected: readonly string[] | undefined,
-    defaultName: string,
+  throwIfAborted(context.signal);
+  const resources: StoryCharacterResource[] = [];
+  const add = (
+    source: string | undefined,
+    label: string,
+    kind?: StoryCharacterResource["kind"],
+    role?: StoryCharacterResource["role"],
   ) => {
-    for (const value of cubismAnimationCatalog(context.entry, field)) {
-      const animation = object(value);
-      const name = firstString(animation.name);
-      if (
-        selected &&
-        name !== defaultName &&
-        (!name || !selected.includes(name))
-      ) {
-        continue;
-      }
-      const animationSource = cubismAnimationSource(animation);
-      if (animationSource) {
-        resources.push({
-          source: animationSource,
-          label:
-            field === "motions" ? "Cubism motion" : "Cubism expression",
-        });
-      }
+    const normalized = firstString(source);
+    if (normalized) {
+      resources.push({
+        source: normalized,
+        label,
+        ...(kind ? { kind } : {}),
+        ...(role ? { role } : {}),
+      });
     }
   };
-  enumerateAnimations(
-    "motions",
-    context.animationUsage?.motions,
-    firstString(
-      profile.defaultMotionName,
-      runtime.defaultMotionName,
-      source.defaultMotionName,
-    ),
-  );
-  enumerateAnimations(
-    "expressions",
-    context.animationUsage?.expressions,
-    firstString(
-      profile.defaultExpressionName,
-      runtime.defaultExpressionName,
-      source.defaultExpressionName,
-    ),
-  );
+
+  const selectedMotions = selectedAnimationNames(context, "motions");
+  const selectedExpressions = selectedAnimationNames(context, "expressions");
+  const enumerateAnimations = (
+    field: "motions" | "expressions",
+    selected: ReadonlySet<string>,
+  ) => {
+    for (const animation of cubismAnimationDescriptors(context.entry, field)) {
+      if (!selected.has(animation.name)) continue;
+      add(
+        animation.source,
+        field === "motions" ? "Cubism motion" : "Cubism expression",
+        undefined,
+        "animation",
+      );
+    }
+  };
+  if (descriptor.sourceKind === "moc") {
+    // The direct-MOC adapter path does not inspect a sibling model.json.
+    // Enumerate exactly the explicit sources that construction consumes.
+    add(descriptor.modelSource, "Cubism model");
+    for (const source of descriptor.textures ?? []) {
+      add(source, "Cubism texture", "texture");
+    }
+    if (descriptor.physicsEnabled !== false) {
+      add(descriptor.physicsSource, "Cubism physics");
+    }
+    add(descriptor.poseSource, "Cubism pose");
+    add(descriptor.userDataSource, "Cubism user data");
+    enumerateAnimations("motions", selectedMotions);
+    enumerateAnimations("expressions", selectedExpressions);
+  } else if (descriptor.manifestSource) {
+    // Manifest construction owns MOC/textures/sidecars. Direct aliases beside
+    // it are not fetched unless the runtime itself adopts override semantics.
+    add(descriptor.manifestSource, "Cubism manifest");
+    const manifest = await loadCubismManifest(
+      context.resources,
+      descriptor.manifestSource,
+      context.signal,
+    );
+    throwIfAborted(context.signal);
+    const projection =
+      descriptor.version === 2
+        ? projectCubism2Manifest(
+            descriptor.manifestSource,
+            manifest,
+            selectedMotions,
+            selectedExpressions,
+            descriptor.physicsEnabled !== false,
+          )
+        : projectModel3Manifest(
+            descriptor.manifestSource,
+            manifest,
+            selectedMotions,
+            selectedExpressions,
+            descriptor.physicsEnabled !== false,
+          );
+    resources.push(...projection.resources);
+  }
+
   const seen = new Set<string>();
   return Object.freeze(
     resources.filter((resource) => {
@@ -789,6 +1263,15 @@ export const createCubismCharacterProvider = (
       throwIfAborted(context.signal);
       await options.adapter.prepare?.(descriptor.version, context.signal);
       throwIfAborted(context.signal);
+      // Resource enumeration normally populated this manifest cache during
+      // story warmup, so the catalogue lookup is byte-cache-only here. It
+      // never fetches motion/expression payloads that the story does not use.
+      const animationCatalog = await loadCubismAnimationCatalog(
+        descriptor,
+        context.resources,
+        context.signal,
+      );
+      throwIfAborted(context.signal);
       const model = await options.adapter.createForRenderer(adapterContext);
       if (context.signal.aborted) {
         const reason = abortReason(context.signal);
@@ -806,11 +1289,20 @@ export const createCubismCharacterProvider = (
         rendererContext: context.rendererContext,
       };
       try {
-        return attachCubismLipSync(model, lipSyncContext, options, [
+        const lipSyncedModel = attachCubismLipSync(
+          model,
+          lipSyncContext,
+          options,
+          [
           "dispose",
           "destroy",
           "release",
-        ]);
+          ],
+        );
+        return attachCubismAnimationCatalog(
+          lipSyncedModel,
+          animationCatalog,
+        );
       } catch (error) {
         await disposeRendererModel(options.adapter, model, adapterContext);
         throw error;
