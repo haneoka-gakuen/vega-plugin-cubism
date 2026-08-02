@@ -1,6 +1,14 @@
 const normalizePath = (path) =>
   String(path).replaceAll("\\", "/").replace(/^\.\/+/u, "");
 
+const permittedWebRuntimeSource = (path) => {
+  const normalized = normalizePath(path);
+  return (
+    normalized === "CUBISM-LICENSE.md" ||
+    /^(?:src|dist)\/web-runtime\/.+\.(?:d\.ts|js|mjs|ts)$/u.test(normalized)
+  );
+};
+
 const restrictedDirectory =
   /^(?:atlases?|character-models?|core|cubism(?:-?sdk)?|expressions?|framework|game-assets?|live2d|models?|motions?|physics|poses?|samples?|sdk|skeletons?|spine(?:-runtimes?)?|textures?|userdata|vendor)$/iu;
 
@@ -33,6 +41,7 @@ const bundledRuntimeMarker =
 
 export const restrictedCubismPathReason = (path) => {
   const normalized = normalizePath(path);
+  if (permittedWebRuntimeSource(normalized)) return null;
   const segments = normalized.split("/").filter(Boolean);
   const basename = segments.at(-1) ?? "";
 
@@ -53,7 +62,7 @@ export const restrictedCubismPathReason = (path) => {
   return null;
 };
 
-export const restrictedCubismContentReason = (bytes) => {
+export const restrictedCubismContentReason = (bytes, path = "") => {
   const body = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
   if (
     body.some(
@@ -73,6 +82,7 @@ export const restrictedCubismContentReason = (bytes) => {
   } catch {
     return "binary payload";
   }
+  if (permittedWebRuntimeSource(path)) return null;
   if (live2dCopyright.test(text)) return "Live2D copyright signature";
   if (live2dLicense.test(text)) return "Live2D license signature";
   if (cubismSdkProduct.test(text)) return "Live2D Cubism SDK product signature";

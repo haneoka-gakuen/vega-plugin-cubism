@@ -19,5 +19,8 @@
   "include": [
     "src/**/*.ts",
     "test/**/*.ts"
+  ],
+  "exclude": [
+    "src/web-runtime/**/*.ts"
   ]
 }

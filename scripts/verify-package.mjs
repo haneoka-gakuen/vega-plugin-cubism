@@ -28,7 +28,9 @@ const policies = {
     allowedImports: [
       "@haneoka/vega",
       "@haneoka/vega/plugin",
+      "three",
     ],
+    runtimeDependencies: ["three"],
     forbiddenDependency: /(?:live2d|cubism|motionsync)/iu,
     externalRuntime: true,
     forbidMedia: true,
@@ -63,9 +65,7 @@ const fail = (message) => {
   throw new Error(`Package verification failed: ${message}`);
 };
 
-if (manifest.license !== "MPL-2.0") {
-  fail("SDK-free Cubism package must use MPL-2.0");
-}
+if (manifest.license !== "MPL-2.0") fail("package must use MPL-2.0");
 if (manifest.private === true) fail("package cannot be private");
 if (manifest.sideEffects !== false) fail("sideEffects must be false");
 if (manifest.publishConfig?.access !== "public") {
@@ -94,8 +94,10 @@ for (const section of dependencySections) {
     }
   }
 }
-if (Object.keys(manifest.dependencies ?? {}).length > 0) {
-  fail("runtime dependencies must be expressed as peer or host adapters");
+const actualRuntimeDependencies = Object.keys(manifest.dependencies ?? {}).sort();
+const expectedRuntimeDependencies = [...(policy.runtimeDependencies ?? [])].sort();
+if (JSON.stringify(actualRuntimeDependencies) !== JSON.stringify(expectedRuntimeDependencies)) {
+  fail(`runtime dependencies must be exactly ${expectedRuntimeDependencies.join(", ") || "(none)"}`);
 }
 if (Object.keys(manifest.optionalDependencies ?? {}).length > 0) {
   fail("optional runtime dependencies are not allowed");
@@ -191,6 +193,7 @@ if (restrictedRepositoryFiles.length > 0) {
 for (const path of repositoryFiles) {
   const reason = restrictedCubismContentReason(
     await readFile(resolve(root, path)),
+    path,
   );
   if (reason) fail(`${reason} found in repository file ${path}`);
 }
@@ -198,10 +201,11 @@ for (const path of repositoryFiles) {
 if (manifest.name === "@haneoka/vega-plugin-cubism") {
   for (const required of [
     "LICENSE",
+    "CUBISM-LICENSE.md",
     "NOTICE.md",
   ]) {
     if (!repositoryFiles.includes(required)) {
-      fail(`SDK-free package is missing distribution notice ${required}`);
+      fail(`package is missing distribution notice ${required}`);
     }
   }
   const { stdout: reachableObjects } = await promisify(execFile)(
@@ -243,7 +247,7 @@ const walkPublishable = async (path, relativePath) => {
   publishableFiles.push(relativePath);
   publishableBytes += (await stat(path)).size;
   const bytes = await readFile(path);
-  const reason = restrictedCubismContentReason(bytes);
+  const reason = restrictedCubismContentReason(bytes, relativePath);
   if (reason) fail(`${reason} found in publishable file ${relativePath}`);
 };
 
