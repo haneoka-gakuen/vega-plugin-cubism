@@ -61,6 +61,9 @@ test("viewer load and pause wiring remain part of the public runtime contract", 
   assert.match(viewerSource, /this\.harmonicMotion\.setPaused\(true\);/);
   assert.match(viewerSource, /this\.harmonicMotion\.setPaused\(false\);[\s\S]*this\.model\?\.setPaused\(false\);/);
   assert.match(viewerSource, /if \(this\.model && deltaSeconds != null\) \{/);
+  assert.match(viewerSource, /setTargetFrameRate\(rate: number\): void \{/);
+  assert.match(viewerSource, /if \(this\.targetFrameRate === next\) return;/);
+  assert.match(viewerSource, /this\.targetFrameRate = next;[\s\S]*this\.frameClock\.reset\(\);/);
   assert.match(viewerSource, /options\?: CubismModelViewerMotionPositionOptions,/);
   assert.match(viewerSource, /\{ loop: options\?\.loop \?\? this\.loopMotionName === name \},/);
   assert.match(modelSource, /this\.pausedMotionRequest\.retain\(request\);/);

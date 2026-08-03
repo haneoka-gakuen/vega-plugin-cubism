@@ -81,7 +81,7 @@ function safeDimension(value: unknown): number {
 export class CubismModelViewer {
   private readonly canvas: HTMLCanvasElement;
   private readonly gl: WebGL2RenderingContext;
-  private readonly targetFrameRate: number;
+  private targetFrameRate: number;
   private readonly orthographicCapture?: CubismModelViewerOrthographicCapture;
   private readonly automaticFrameControl: boolean;
   private readonly frameClock = new UnityTargetFrameClock();
@@ -276,6 +276,15 @@ export class CubismModelViewer {
       this.harmonicMotion.setPaused(false);
       this.model?.setPaused(false);
     }
+    this.frameClock.reset();
+    this.previousFrameTime = performance.now();
+  }
+
+  /** Change the Unity-equivalent model update cadence without rebuilding it. */
+  setTargetFrameRate(rate: number): void {
+    const next = Math.max(1, finite(rate, DEFAULT_TARGET_FRAME_RATE));
+    if (this.targetFrameRate === next) return;
+    this.targetFrameRate = next;
     this.frameClock.reset();
     this.previousFrameTime = performance.now();
   }
