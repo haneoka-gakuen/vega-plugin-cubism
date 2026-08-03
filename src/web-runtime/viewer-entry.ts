@@ -2,6 +2,7 @@ export {
   CubismModelViewer,
   type CubismModelViewerFocusAnchor,
   type CubismModelViewerLoadOptions,
+  type CubismModelViewerMotionPositionOptions,
   type CubismModelViewerOptions,
   type CubismModelViewerTransform,
 } from "./viewer/CubismModelViewer";

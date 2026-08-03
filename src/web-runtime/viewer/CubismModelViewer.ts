@@ -8,6 +8,7 @@ import {
   UnityTargetFrameClock,
   acquireCubismShaderContext,
   releaseCubismShaderContext,
+  type AdvCubismMotionPositionOptions,
   type AdvHarmonicMotionData,
   type CubismDrawableBounds,
   type CubismParameterValue,
@@ -59,6 +60,9 @@ export interface CubismModelViewerFocusAnchor {
   /** Model-local Y coordinate, in the same Unity/Cubism space as drawable vertices. */
   readonly y?: number;
 }
+
+/** Per-call transport restoration policy; explicit values override viewer loop state. */
+export type CubismModelViewerMotionPositionOptions = AdvCubismMotionPositionOptions;
 
 function finite(value: unknown, fallback = 0): number {
   const numeric = Number(value);
@@ -372,12 +376,17 @@ export class CubismModelViewer {
   }
 
   /** Restore an authored motion after host transport seek/retry. */
-  playMotionAt(name: string, positionSeconds: number, fadeInSeconds?: number): boolean {
+  playMotionAt(
+    name: string,
+    positionSeconds: number,
+    fadeInSeconds?: number,
+    options?: CubismModelViewerMotionPositionOptions,
+  ): boolean {
     return this.model?.playMotionAt(
       name,
       positionSeconds,
       fadeInSeconds,
-      { loop: this.loopMotionName === name },
+      { loop: options?.loop ?? this.loopMotionName === name },
     ) ?? false;
   }
 
