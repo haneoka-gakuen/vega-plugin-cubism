@@ -30,6 +30,7 @@ export interface CubismModelViewerLoadOptions {
   readonly harmonicMotion?: AdvHarmonicMotionData | null;
   readonly defaultMotionName?: string;
   readonly defaultExpressionName?: string;
+  readonly physics?: boolean;
   readonly lighting?: UnityCubismLightingState;
   readonly maskBufferSize?: number;
   readonly anisotropy?: number;
@@ -198,7 +199,7 @@ export class CubismModelViewer {
       defaultMotionName: options.defaultMotionName,
       maskBufferSize: options.maskBufferSize,
       anisotropy: options.anisotropy,
-      physics: true,
+      physics: options.physics ?? true,
       breath: false,
       lighting: options.lighting ?? DEFAULT_UNITY_CUBISM_LIGHTING,
     });
@@ -214,6 +215,8 @@ export class CubismModelViewer {
     this.model = model;
     this.playback.apply(model);
     model.setEyeBlinkEnabled(this.eyeBlinkEnabled);
+    model.setPaused(this.paused);
+    this.harmonicMotion.setPaused(this.paused);
     if (options.defaultMotionName) model.playMotion(options.defaultMotionName);
     if (options.defaultExpressionName)
       model.playExpression(options.defaultExpressionName);
@@ -260,6 +263,15 @@ export class CubismModelViewer {
     const next = Boolean(paused);
     if (this.paused === next) return;
     this.paused = next;
+    if (next) {
+      this.model?.setPaused(true);
+      this.harmonicMotion.setPaused(true);
+    } else {
+      // Native Resume restarts harmonic channel zero before expression reset
+      // and dispatch of the pause-time motion/expression slots.
+      this.harmonicMotion.setPaused(false);
+      this.model?.setPaused(false);
+    }
     this.frameClock.reset();
     this.previousFrameTime = performance.now();
   }
@@ -387,13 +399,13 @@ export class CubismModelViewer {
     const deltaSeconds = this.frameClock.advance(elapsed, this.targetFrameRate);
     if (this.contextLost || this.renderFaulted) return false;
     try {
-      if (this.model && deltaSeconds != null && !this.paused) {
+      if (this.model && deltaSeconds != null) {
         this.updateModel(deltaSeconds);
-        if (this.loopMotionName && !this.model.isMotionPlaying)
+        if (!this.paused && this.loopMotionName && !this.model.isMotionPlaying)
           this.model.playMotion(this.loopMotionName);
         return true;
       }
-      if (this.model && this.paused && focusChanged) {
+      if (this.model && focusChanged) {
         this.updateModel(0);
         return true;
       }

@@ -27,6 +27,7 @@ import {
 import type { StoryCharacterModel } from "../StoryCharacterModel";
 import { ensureCubismFramework } from "./CubismCoreRuntime";
 import { resolveCubismFadeIn } from "./AdvCubismMotionFade";
+import { PausedCubismRequest } from "./PausedCubismRequest";
 import {
   cachedCubismModelResourceLoader,
   createOwnedAbortSignal,
@@ -202,6 +203,8 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
   private expressionRequestSequence = 0;
   private requestedMotion: CubismPlaybackRequest | null = null;
   private requestedExpression: CubismPlaybackRequest | null = null;
+  private readonly pausedMotionRequest = new PausedCubismRequest<CubismPlaybackRequest>();
+  private readonly pausedExpressionRequest = new PausedCubismRequest<CubismPlaybackRequest>();
   private pixelsPerUnitValue = 1;
 
   private readonly gl: WebGL2RenderingContext;
@@ -544,13 +547,26 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
 
   setPaused(paused: boolean): void {
     const next = Boolean(paused);
+    const resuming = this.paused && !next;
+    this.paused = next;
     if (!next && this.isInitialized()) {
       // Live2DCharacter.ResumeAnimation resets expression-authored parameter
       // values unconditionally (including a repeated Resume) before
       // dispatching any motion/expression queued by Pause.
       this.resetExpressionParametersToDefault();
     }
-    this.paused = next;
+    if (!resuming) return;
+
+    const motion = this.pausedMotionRequest.take();
+    if (motion && this.requestedMotion?.sequence === motion.sequence) {
+      if (this.motions.has(motion.name)) this.startMotionRequestWithRecovery(motion);
+      else void this.ensureMotion(motion.name);
+    }
+    const expression = this.pausedExpressionRequest.take();
+    if (expression && this.requestedExpression?.sequence === expression.sequence) {
+      if (this.expressions.has(expression.name)) this.startExpressionRequestWithRecovery(expression);
+      else void this.ensureExpression(expression.name);
+    }
   }
 
   /**
@@ -598,6 +614,7 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     // Invalidate it so completion cannot resurrect an obsolete motion.
     if (this.requestedMotion) this.motionRetries.succeed(this.requestedMotion.name);
     this.requestedMotion = null;
+    this.pausedMotionRequest.clear();
     this.motionRequestSequence += 1;
     this._motionManager.stopAllMotions();
   }
@@ -675,6 +692,11 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
       fadeInSeconds,
     };
     this.requestedMotion = request;
+    if (this.paused) {
+      this.pausedMotionRequest.retain(request);
+      if (!this.motions.has(name)) void this.ensureMotion(name);
+      return false;
+    }
     const motion = this.motions.get(name);
     if (motion) return this.startMotionRequestWithRecovery(request);
     // Not loaded yet: fetch on demand and start once resolved. The rolling
@@ -698,6 +720,11 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
       fadeInSeconds,
     };
     this.requestedExpression = request;
+    if (this.paused) {
+      this.pausedExpressionRequest.retain(request);
+      if (!this.expressions.has(name)) void this.ensureExpression(name);
+      return false;
+    }
     const expression = this.expressions.get(name);
     if (expression) return this.startExpressionRequestWithRecovery(request);
     // Expression dispatch and its pause pending slot use the same single-channel
@@ -730,6 +757,12 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
 
   private startMotionRequest(request: CubismPlaybackRequest): boolean {
     if (this.released || this.requestedMotion?.sequence !== request.sequence) return false;
+    if (this.paused) {
+      // A lazy request may have started before Pause and completed during it.
+      // Route that completion through the same single resume slot.
+      this.pausedMotionRequest.retain(request);
+      return false;
+    }
     const motion = this.motions.get(request.name);
     if (!motion) return false;
     motion.setFadeInTime(resolveCubismFadeIn(request.fadeInSeconds, this.motionFadeInTimes.get(request.name)));
@@ -750,6 +783,10 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
 
   private startExpressionRequest(request: CubismPlaybackRequest): boolean {
     if (this.released || this.requestedExpression?.sequence !== request.sequence) return false;
+    if (this.paused) {
+      this.pausedExpressionRequest.retain(request);
+      return false;
+    }
     const expression = this.expressions.get(request.name);
     if (!expression) return false;
     expression.setFadeInTime(resolveCubismFadeIn(request.fadeInSeconds, this.expressionFadeInTimes.get(request.name)));
@@ -1146,6 +1183,8 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     this.expressionRetries.clear();
     this.requestedMotion = null;
     this.requestedExpression = null;
+    this.pausedMotionRequest.clear();
+    this.pausedExpressionRequest.clear();
     this.motionRequestSequence += 1;
     this.expressionRequestSequence += 1;
     this.setting?.release();

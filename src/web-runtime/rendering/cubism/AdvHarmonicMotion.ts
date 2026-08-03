@@ -102,6 +102,7 @@ export function evaluateAdvHarmonicMotion(
 export class AdvHarmonicMotionController {
   private elapsedSeconds = 0;
   private data: AdvHarmonicMotionData | null;
+  private paused = false;
 
   constructor(data: AdvHarmonicMotionData | null = null) {
     this.data = data;
@@ -116,8 +117,13 @@ export class AdvHarmonicMotionController {
     this.elapsedSeconds = 0;
   }
 
+  /** Mirrors CubismHarmonicMotionController Stop(0) / Play(0). */
+  setPaused(paused: boolean): void {
+    this.paused = Boolean(paused);
+  }
+
   advance(deltaSeconds: number, model: AdvHarmonicParameterSource): CubismParameterBlend[] {
-    this.elapsedSeconds += Math.max(0, finite(deltaSeconds));
+    if (!this.paused) this.elapsedSeconds += Math.max(0, finite(deltaSeconds));
     return evaluateAdvHarmonicMotion(this.data, this.elapsedSeconds, model);
   }
 

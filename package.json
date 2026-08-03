@@ -55,9 +55,10 @@
   },
   "scripts": {
     "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.build.json && tsc -p tsconfig.web-runtime.build.json && vite build --config vite.web-runtime.config.ts && vite build --config vite.web-viewer.config.ts",
+    "test": "node --test",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.web-runtime.json --noEmit",
     "verify:package": "node scripts/verify-package.mjs",
-    "check": "pnpm run typecheck && pnpm run build && pnpm run verify:package",
+    "check": "pnpm run test && pnpm run typecheck && pnpm run build && pnpm run verify:package",
     "prepack": "pnpm run check"
   },
   "peerDependencies": {
