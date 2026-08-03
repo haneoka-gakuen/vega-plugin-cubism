@@ -1,4 +1,4 @@
-import type { Matrix4 } from "three";
+import type { Matrix4Like } from "./math/Matrix4";
 import type { AdvCubismDrawState, CubismDrawableBounds, CubismParameterFrame } from "./cubism/AdvCubismModel";
 import type { AdvMotionSyncCoreStatus } from "./cubism/AdvMotionSyncCore";
 
@@ -48,7 +48,7 @@ export interface StoryCharacterModel {
 
   update(deltaSeconds: number, frame: CubismParameterFrame): void;
   draw(
-    mvp: Matrix4,
+    mvp: Matrix4Like,
     framebuffer: WebGLFramebuffer | null,
     viewport: readonly [number, number, number, number],
     color: readonly [number, number, number, number],

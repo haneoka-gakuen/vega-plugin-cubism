@@ -28,9 +28,8 @@ const policies = {
     allowedImports: [
       "@haneoka/vega",
       "@haneoka/vega/plugin",
-      "three",
     ],
-    runtimeDependencies: ["three"],
+    runtimeDependencies: [],
     forbiddenDependency: /(?:live2d|cubism|motionsync)/iu,
     externalRuntime: true,
     forbidMedia: true,
@@ -210,7 +209,11 @@ if (manifest.name === "@haneoka/vega-plugin-cubism") {
   }
   const { stdout: reachableObjects } = await promisify(execFile)(
     "git",
-    ["rev-list", "--objects", "--all"],
+    // Tree objects have directory paths such as `.../vendor/cubism` even when
+    // every file below that directory is an explicitly permitted TypeScript
+    // source file. Inspect blobs only so the policy evaluates distributable
+    // content rather than rejecting a parent tree name.
+    ["rev-list", "--objects", "--all", "--filter=object:type=blob"],
     { cwd: root, encoding: "utf8" },
   );
   const restrictedHistory = reachableObjects
@@ -291,6 +294,67 @@ const unexpectedImports = [...externalImports].filter(
 );
 if (unexpectedImports.length > 0) {
   fail(`unexpected runtime imports: ${unexpectedImports.join(", ")}`);
+}
+
+if (manifest.name === "@haneoka/vega-plugin-cubism") {
+  for (const output of [
+    "dist/web-runtime/vega-cubism-web-runtime.mjs",
+    "dist/web-runtime/vega-cubism-web-viewer.mjs",
+  ]) {
+    const source = await readFile(resolve(root, output), "utf8");
+    if (
+      source.includes("Multiple instances of Three.js") ||
+      source.includes("__THREE__")
+    ) {
+      fail(`${output} embeds a second Three.js runtime`);
+    }
+  }
+
+  // Different ESM identities have independent CubismFramework module state.
+  // They may share the externally loaded Core script, but each must initialize
+  // its own ID manager instead of trusting another bundle's ready flag.
+  const coreGlobalName = ["Live2D", "Cubism", "Core"].join("");
+  const versionGetterName = ["csm", "Get", "Version"].join("");
+  const previousCore = globalThis[coreGlobalName];
+  const previousRuntimeState = globalThis.__vegaCubismWebRuntime;
+  const logging = { callback: null };
+  try {
+    delete globalThis.__vegaCubismWebRuntime;
+    globalThis[coreGlobalName] = {
+      Logging: {
+        csmSetLogFunction(callback) {
+          logging.callback = callback;
+        },
+        csmGetLogFunction() {
+          return logging.callback;
+        },
+      },
+      Version: { [versionGetterName]: () => 0 },
+      Memory: { initializeAmountOfMemory() {} },
+    };
+    const runtimeUrl = new URL(
+      "../dist/web-runtime/vega-cubism-web-runtime.mjs",
+      import.meta.url,
+    ).href;
+    const first = await import(`${runtimeUrl}?verify-instance=first`);
+    const second = await import(`${runtimeUrl}?verify-instance=second`);
+    await first.createCubismWebRuntimeAdapter().prepare(3);
+    await second.createCubismWebRuntimeAdapter().prepare(3);
+    new second.AdvCubismModel({
+      gl: {},
+      modelUrl: "memory://verify-model3.json",
+    });
+  } catch (error) {
+    fail(`duplicate runtime framework initialization failed: ${String(error)}`);
+  } finally {
+    if (previousCore === undefined) delete globalThis[coreGlobalName];
+    else globalThis[coreGlobalName] = previousCore;
+    if (previousRuntimeState === undefined) {
+      delete globalThis.__vegaCubismWebRuntime;
+    } else {
+      globalThis.__vegaCubismWebRuntime = previousRuntimeState;
+    }
+  }
 }
 
 console.log(

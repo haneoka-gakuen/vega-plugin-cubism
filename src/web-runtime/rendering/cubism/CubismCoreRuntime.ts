@@ -26,23 +26,73 @@ interface CubismGlobalState {
   corePromise: Promise<void> | null;
   cubism2Promise: Promise<void> | null;
   motionSyncPromise: Promise<unknown> | null;
-  frameworkReady: boolean;
 }
 
 const globalKey = "__vegaCubismWebRuntime";
+// CubismFramework keeps its ID manager in module-local state. Different ESM
+// identities (for example Vite's `?import` module and a viewer's relative
+// import) therefore need independent framework initialization even though
+// they can share the same externally loaded Core script.
+let frameworkPromise: Promise<void> | null = null;
+
+function isLocalFrameworkReady(): boolean {
+  return CubismFramework.isInitialized() && Boolean(CubismFramework.getIdManager());
+}
 
 function globalState(): CubismGlobalState {
   const target = globalThis as typeof globalThis & Record<string, unknown>;
-  const current = target[globalKey] as CubismGlobalState | undefined;
-  if (current) return current;
+  const current = target[globalKey];
+  if (current && typeof current === "object") {
+    const state = current as Partial<CubismGlobalState>;
+    state.corePromise ??= null;
+    state.cubism2Promise ??= null;
+    state.motionSyncPromise ??= null;
+    return state as CubismGlobalState;
+  }
   const created: CubismGlobalState = {
     corePromise: null,
     cubism2Promise: null,
     motionSyncPromise: null,
-    frameworkReady: false,
   };
   target[globalKey] = created;
   return created;
+}
+
+function waitForSharedRuntime<T>(
+  pending: Promise<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  if (!signal) return pending;
+  if (signal.aborted) {
+    return Promise.reject(
+      signal.reason ??
+        new DOMException("Cubism runtime initialization was aborted", "AbortError"),
+    );
+  }
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void): void => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", abort);
+      callback();
+    };
+    const abort = (): void =>
+      finish(() =>
+        reject(
+          signal.reason ??
+            new DOMException(
+              "Cubism runtime initialization was aborted",
+              "AbortError",
+            ),
+        ),
+      );
+    signal.addEventListener("abort", abort, { once: true });
+    pending.then(
+      (value) => finish(() => resolve(value)),
+      (error: unknown) => finish(() => reject(error)),
+    );
+  });
 }
 
 function loadClassicScript(url: string, ready: () => boolean, label: string): Promise<void> {
@@ -84,31 +134,50 @@ function loadClassicScript(url: string, ready: () => boolean, label: string): Pr
   });
 }
 
-export async function ensureCubismFramework(_signal?: AbortSignal): Promise<void> {
+export async function ensureCubismFramework(signal?: AbortSignal): Promise<void> {
   const state = globalState();
-  if (!state.corePromise) {
-    const globals = globalThis as typeof globalThis & { Live2DCubismCore?: unknown };
-    state.corePromise = loadClassicScript(
-      runtimeSources.cubismCoreUrl,
-      () => Boolean(globals.Live2DCubismCore),
-      "live2d-cubism-core",
-    ).catch((error: unknown) => {
-      state.corePromise = null;
-      throw error;
-    });
-  }
-  await state.corePromise;
-  if (state.frameworkReady) return;
+  if (isLocalFrameworkReady()) return;
+  if (!frameworkPromise) {
+    const pending = (async () => {
+      if (!state.corePromise) {
+        const globals = globalThis as typeof globalThis & {
+          Live2DCubismCore?: unknown;
+        };
+        state.corePromise = loadClassicScript(
+          runtimeSources.cubismCoreUrl,
+          () => Boolean(globals.Live2DCubismCore),
+          "live2d-cubism-core",
+        ).catch((error: unknown) => {
+          state.corePromise = null;
+          throw error;
+        });
+      }
+      await state.corePromise;
+      if (isLocalFrameworkReady()) return;
 
-  const option = new Option();
-  option.loggingLevel = LogLevel.LogLevel_Warning;
-  option.logFunction = (message: string) => console.warn(`[Cubism] ${message}`);
-  CubismFramework.startUp(option);
-  CubismFramework.initialize(64 * 1024 * 1024);
-  state.frameworkReady = true;
+      const option = new Option();
+      option.loggingLevel = LogLevel.LogLevel_Warning;
+      option.logFunction = (message: string) =>
+        console.warn(`[Cubism] ${message}`);
+      CubismFramework.startUp(option);
+      CubismFramework.initialize(64 * 1024 * 1024);
+      if (!isLocalFrameworkReady()) {
+        throw new Error("Cubism Framework initialized without an ID manager");
+      }
+    })();
+    frameworkPromise = pending;
+    const clearPending = (): void => {
+      if (frameworkPromise === pending) frameworkPromise = null;
+    };
+    pending.then(clearPending, clearPending);
+  }
+  await waitForSharedRuntime(frameworkPromise, signal);
+  if (!isLocalFrameworkReady()) {
+    throw new Error("Cubism Framework is unavailable after initialization");
+  }
 }
 
-export async function ensureCubism2Framework(_signal?: AbortSignal): Promise<void> {
+export async function ensureCubism2Framework(signal?: AbortSignal): Promise<void> {
   const state = globalState();
   if (!state.cubism2Promise) {
     const globals = globalThis as typeof globalThis & { Live2D?: { init?: () => void } };
@@ -126,7 +195,7 @@ export async function ensureCubism2Framework(_signal?: AbortSignal): Promise<voi
         throw error;
       });
   }
-  await state.cubism2Promise;
+  await waitForSharedRuntime(state.cubism2Promise, signal);
 }
 
 export async function ensureMotionSyncCore(errorMessage = "Live2D MotionSync Core is unavailable"): Promise<unknown> {

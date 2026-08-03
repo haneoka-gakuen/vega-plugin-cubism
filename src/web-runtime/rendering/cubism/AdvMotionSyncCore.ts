@@ -23,6 +23,9 @@ interface CoreModel {
 
 /** MotionSync WASM engine (loaded dynamically from vendored pjsekai engine) */
 interface MotionSyncCore {
+  /** Common Emscripten exports; absent on older minified Core wrappers. */
+  HEAPF32?: Float32Array;
+  Module?: { HEAPF32?: Float32Array };
   CubismMotionSyncEngine: {
     csmMotionSyncInitializeEngine(flag: number): number;
   };
@@ -90,6 +93,11 @@ function finite(value: number | undefined | null, fallback = 0): number {
 function clamp(value: number | undefined | null, min = 0, max = 1): number {
   const next = finite(value, min);
   return Math.max(min, Math.min(max, next));
+}
+
+function motionSyncFloatHeap(core: MotionSyncCore): Float32Array | null {
+  const heap = core.HEAPF32 ?? core.Module?.HEAPF32;
+  return heap instanceof Float32Array ? heap : null;
 }
 
 function parameterIdString(value: unknown): string {
@@ -503,10 +511,7 @@ export class AdvMotionSyncCoreAdapter {
     ) {
       const analyzeCount = this.sampleBufferLength;
       this.ensureSamplePtr(analyzeCount);
-      for (let index = 0; index < analyzeCount; index += 1) {
-        const readIndex = (this.sampleBufferStart + index) % this.sampleBuffer.length;
-        core.ToPointer.AddValuePtrFloat(this.samplePtr, index * 4, this.sampleBuffer[readIndex]);
-      }
+      this.writeSamplesToCore(analyzeCount);
       const ok = this.context.csmMotionSyncAnalyze(
         this.samplePtr,
         analyzeCount,
@@ -523,11 +528,54 @@ export class AdvMotionSyncCoreAdapter {
       this.sampleBufferStart = (this.sampleBufferStart + consumed) % this.sampleBuffer.length;
       this.sampleBufferLength -= consumed;
       this.lastTotalProcessedCount += processed;
-      const rawValues = core.ToPointer.GetValuesFromAnalysisResult(
-        this.analysisResultNative?.[0] ?? 0,
-        this.parameters.length,
-      );
+      const valuesPtr = this.analysisResultNative?.[0] ?? 0;
+      const heap = motionSyncFloatHeap(core);
+      const heapIndex = valuesPtr >>> 2;
+      const rawValues =
+        valuesPtr > 0 &&
+        (valuesPtr & 3) === 0 &&
+        heap &&
+        heapIndex + this.parameters.length <= heap.length
+          ? heap.subarray(heapIndex, heapIndex + this.parameters.length)
+          : core.ToPointer.GetValuesFromAnalysisResult(
+              valuesPtr,
+              this.parameters.length,
+            );
       this.postProcess(rawValues);
+    }
+  }
+
+  private writeSamplesToCore(count: number): void {
+    const core = this.core;
+    if (!core || count <= 0) return;
+    const heap = motionSyncFloatHeap(core);
+    const heapIndex = this.samplePtr >>> 2;
+    if (
+      this.samplePtr > 0 &&
+      (this.samplePtr & 3) === 0 &&
+      heap &&
+      heapIndex + count <= heap.length
+    ) {
+      const first = Math.min(count, this.sampleBuffer.length - this.sampleBufferStart);
+      heap.set(
+        this.sampleBuffer.subarray(this.sampleBufferStart, this.sampleBufferStart + first),
+        heapIndex,
+      );
+      const remaining = count - first;
+      if (remaining > 0) {
+        heap.set(this.sampleBuffer.subarray(0, remaining), heapIndex + first);
+      }
+      return;
+    }
+    // Compatibility path for Core wrappers that intentionally hide the
+    // Emscripten heap. It preserves the old per-value bridge exactly.
+    for (let index = 0; index < count; index += 1) {
+      const readIndex = (this.sampleBufferStart + index) % this.sampleBuffer.length;
+      core.ToPointer.AddValuePtrFloat(
+        this.samplePtr,
+        index * Float32Array.BYTES_PER_ELEMENT,
+        this.sampleBuffer[readIndex],
+      );
     }
   }
 
@@ -537,7 +585,7 @@ export class AdvMotionSyncCoreAdapter {
     this.reusableOutput.processedSampleCount = 0;
   }
 
-  private postProcess(rawValues: number[]) {
+  private postProcess(rawValues: ArrayLike<number>) {
     let outputCount = 0;
     this.nextOutputValid.fill(0);
     for (let index = 0; index < this.parameters.length; index += 1) {

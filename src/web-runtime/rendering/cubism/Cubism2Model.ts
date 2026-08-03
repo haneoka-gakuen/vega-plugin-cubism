@@ -1,12 +1,15 @@
-import { Matrix4 } from "three";
+import {
+  Matrix4,
+  type Matrix4Like,
+} from "../math/Matrix4";
 import type { AdvCubismDrawState, CubismDrawableBounds, CubismParameterFrame } from "./AdvCubismModel";
 import type { AdvMotionSyncCoreStatus } from "./AdvMotionSyncCore";
 import type { StoryCharacterModel } from "../StoryCharacterModel";
 import { ensureCubism2Framework } from "./CubismCoreRuntime";
 import {
+  cachedCubismModelResourceLoader,
   createOwnedAbortSignal,
-  fetchCachedArrayBuffer,
-  loadCachedImage,
+  type CubismModelResourceLoader,
   type OwnedAbortSignal,
 } from "./CubismResourceCache";
 import { cubismRetryClockSeconds, CubismResourceRetrySchedule } from "./CubismResourceRetry";
@@ -223,6 +226,8 @@ export interface Cubism2ModelOptions {
   physicsUrl?: string;
   /** Quality gate; defaults to true when a physics asset is available. */
   physicsEnabled?: boolean;
+  /** Resolver-backed immutable bytes and decoded-image cache. */
+  resourceLoader?: CubismModelResourceLoader;
 }
 
 interface MotionEntry {
@@ -327,7 +332,7 @@ const requestedFadeMilliseconds = (fadeInSeconds: number | undefined, fallback: 
 
 const createTexture2D = (
   gl: WebGL2RenderingContext,
-  image: HTMLImageElement,
+  image: TexImageSource,
   modelUsesPremultipliedAlpha: boolean,
 ): WebGLTexture => {
   const texture = gl.createTexture();
@@ -392,6 +397,7 @@ export class Cubism2Model implements StoryCharacterModel {
   private readonly gl: WebGL2RenderingContext;
   private readonly resourceAbort: OwnedAbortSignal;
   private readonly resourceSignal: AbortSignal;
+  private readonly resourceLoader: CubismModelResourceLoader;
   private glContextLease: Cubism2ContextLease | null = null;
   private liveModel: Live2DModelWebGLC2 | null = null;
   private motionManager: MotionQueueManagerC2 | null = null;
@@ -440,6 +446,7 @@ export class Cubism2Model implements StoryCharacterModel {
     this.gl = options.gl;
     this.resourceAbort = createOwnedAbortSignal(options.signal);
     this.resourceSignal = this.resourceAbort.signal;
+    this.resourceLoader = options.resourceLoader ?? cachedCubismModelResourceLoader;
     this.modelUrl = options.mocUrl;
     const pixelsPerUnit = finiteNumber(options.pixelsPerUnit, Number.NaN);
     this.hasExplicitPixelsPerUnit = Number.isFinite(pixelsPerUnit) && pixelsPerUnit > 0;
@@ -473,7 +480,7 @@ export class Cubism2Model implements StoryCharacterModel {
 
   private async initialize(options: Cubism2ModelOptions): Promise<void> {
     const sdk = live2d();
-    const mocBytes = await fetchCachedArrayBuffer(options.mocUrl, this.resourceSignal);
+    const mocBytes = await this.resourceLoader.loadArrayBuffer(options.mocUrl, this.resourceSignal);
     // ensureCubism2Framework initialized the process-global SDK exactly once.
     // Calling Live2D.init again for a second character can reset global state.
     // Acquire the global slot only after the async fetch, immediately before
@@ -499,7 +506,7 @@ export class Cubism2Model implements StoryCharacterModel {
     for (let index = 0; index < options.textureUrls.length; index += 1) {
       const url = String(options.textureUrls[index] || "").trim();
       if (!url) continue;
-      const image = await loadCachedImage(url, this.resourceSignal);
+      const image = await this.resourceLoader.loadImage(url, this.resourceSignal);
       const texture = createTexture2D(this.gl, image, modelUsesPremultipliedAlpha);
       this.textures.push(texture);
       model.setTexture(index, texture);
@@ -641,7 +648,7 @@ export class Cubism2Model implements StoryCharacterModel {
     const generation = this.resourceGeneration;
     const task = (async (): Promise<CachedMotion | null> => {
       try {
-        const bytes = await fetchCachedArrayBuffer(url, this.resourceSignal);
+        const bytes = await this.resourceLoader.loadArrayBuffer(url, this.resourceSignal);
         if (this.released || generation !== this.resourceGeneration) return null;
         // Keep bytes, not a mutable Live2DMotion instance. `setFadeIn` mutates
         // that instance and the legacy API has no public getFadeIn(), so a new
@@ -674,7 +681,7 @@ export class Cubism2Model implements StoryCharacterModel {
     const generation = this.resourceGeneration;
     const task = (async (): Promise<CachedExpression | null> => {
       try {
-        const bytes = await fetchCachedArrayBuffer(entry.url, this.resourceSignal);
+        const bytes = await this.resourceLoader.loadArrayBuffer(entry.url, this.resourceSignal);
         if (this.released || generation !== this.resourceGeneration) return null;
         const asset = JSON.parse(new TextDecoder().decode(bytes)) as LegacyExpressionAsset;
         const result = this.createExpressionRecipe(asset);
@@ -870,7 +877,7 @@ export class Cubism2Model implements StoryCharacterModel {
 
   private async loadPhysics(url: string): Promise<void> {
     try {
-      const bytes = await fetchCachedArrayBuffer(url, this.resourceSignal);
+      const bytes = await this.resourceLoader.loadArrayBuffer(url, this.resourceSignal);
       if (this.released) return;
       const asset = JSON.parse(new TextDecoder().decode(bytes)) as LegacyPhysicsAsset;
       this.physicsHairs = this.createPhysicsHairs(asset);
@@ -1066,7 +1073,7 @@ export class Cubism2Model implements StoryCharacterModel {
    * camera MVP. This fixed authoring transform keeps camera framing independent
    * from model size and lets legacy models share the Cubism 3 scene pipeline.
    */
-  private composeDrawMatrix(mvp: Matrix4): Float32Array {
+  private composeDrawMatrix(mvp: Matrix4Like): Float32Array {
     const model = this.liveModel;
     if (!model) {
       this.drawMatrix.set(mvp.elements);
@@ -1099,7 +1106,7 @@ export class Cubism2Model implements StoryCharacterModel {
   }
 
   draw(
-    mvp: Matrix4,
+    mvp: Matrix4Like,
     framebuffer: WebGLFramebuffer | null,
     viewport: readonly [number, number, number, number],
     color: readonly [number, number, number, number],

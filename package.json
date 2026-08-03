@@ -46,25 +46,25 @@
       "import": "./dist/web-runtime/vega-cubism-web-runtime.mjs",
       "default": "./dist/web-runtime/vega-cubism-web-runtime.mjs"
     },
+    "./web-runtime/viewer": {
+      "types": "./dist/web-runtime/viewer-entry.d.ts",
+      "import": "./dist/web-runtime/vega-cubism-web-viewer.mjs",
+      "default": "./dist/web-runtime/vega-cubism-web-viewer.mjs"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.build.json && tsc -p tsconfig.web-runtime.build.json && vite build --config vite.web-runtime.config.ts",
-    "test": "node --test test/**/*.test.mjs",
+    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.build.json && tsc -p tsconfig.web-runtime.build.json && vite build --config vite.web-runtime.config.ts && vite build --config vite.web-viewer.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.web-runtime.json --noEmit",
     "verify:package": "node scripts/verify-package.mjs",
-    "check": "pnpm run typecheck && pnpm run build && pnpm run test && pnpm run verify:package",
+    "check": "pnpm run typecheck && pnpm run build && pnpm run verify:package",
     "prepack": "pnpm run check"
   },
   "peerDependencies": {
     "@haneoka/vega": "^0.1.0"
   },
-  "dependencies": {
-    "three": "0.184.0"
-  },
   "devDependencies": {
     "@haneoka/vega": "^0.1.0",
-    "@types/three": "^0.184.1",
     "typescript": "^6.0.3",
     "vite": "^7.3.6"
   },

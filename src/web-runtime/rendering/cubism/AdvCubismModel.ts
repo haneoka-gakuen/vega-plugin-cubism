@@ -1,4 +1,7 @@
-import { Matrix4 } from "three";
+import {
+  Matrix4,
+  type Matrix4Like,
+} from "../math/Matrix4";
 import { CubismDefaultParameterId } from "../../vendor/cubism/cubismdefaultparameterid";
 import { CubismModelSettingJson } from "../../vendor/cubism/cubismmodelsettingjson";
 import { BreathParameterData, CubismBreath } from "../../vendor/cubism/effect/cubismbreath";
@@ -25,9 +28,9 @@ import type { StoryCharacterModel } from "../StoryCharacterModel";
 import { ensureCubismFramework } from "./CubismCoreRuntime";
 import { resolveCubismFadeIn } from "./AdvCubismMotionFade";
 import {
+  cachedCubismModelResourceLoader,
   createOwnedAbortSignal,
-  fetchCachedArrayBuffer,
-  loadCachedImage,
+  type CubismModelResourceLoader,
   type OwnedAbortSignal,
 } from "./CubismResourceCache";
 import { cubismRetryClockSeconds, CubismResourceRetrySchedule } from "./CubismResourceRetry";
@@ -94,11 +97,13 @@ export interface AdvCubismModelOptions {
   breath?: boolean;
   lighting?: UnityCubismLightingState;
   motionSync?: AdvMotionSyncRuntime | AdvMotionSyncSetting | null;
+  /** Resolver-backed immutable bytes and decoded-image cache. */
+  resourceLoader?: CubismModelResourceLoader;
 }
 
 export interface AdvCubismDrawState {
   /** Three-basis matrixWorld; converted back to Unity basis before shader upload. */
-  readonly objectToWorld?: Matrix4;
+  readonly objectToWorld?: Matrix4Like;
   readonly timeSeconds?: number;
 }
 
@@ -119,7 +124,7 @@ function fileStem(path: string): string {
   return file.replace(/\.(?:motion3|exp3)\.json$/i, "");
 }
 
-function createTexture(gl: WebGL2RenderingContext, image: HTMLImageElement, anisotropy: number): WebGLTexture {
+function createTexture(gl: WebGL2RenderingContext, image: TexImageSource, anisotropy: number): WebGLTexture {
   const texture = gl.createTexture();
   if (!texture) throw new Error("Unable to allocate a Cubism texture");
   gl.bindTexture(gl.TEXTURE_2D, texture);
@@ -148,9 +153,10 @@ async function createCubismTexture(
   gl: WebGL2RenderingContext,
   url: string,
   anisotropy: number,
+  resources: CubismModelResourceLoader,
   signal?: AbortSignal,
 ): Promise<WebGLTexture> {
-  const image = await loadCachedImage(url, signal);
+  const image = await resources.loadImage(url, signal);
   return createTexture(gl, image, anisotropy);
 }
 
@@ -201,6 +207,7 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
   private readonly gl: WebGL2RenderingContext;
   private readonly resourceAbort: OwnedAbortSignal;
   private readonly resourceSignal: AbortSignal;
+  private readonly resourceLoader: CubismModelResourceLoader;
   private readonly eyeBlinkIds = new csmVector<CubismIdHandle>();
   private readonly lipSyncIds = new csmVector<CubismIdHandle>();
   private readonly parameterIds = new Map<string, CubismIdHandle>();
@@ -249,6 +256,7 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     this.gl = options.gl;
     this.resourceAbort = createOwnedAbortSignal(options.signal);
     this.resourceSignal = this.resourceAbort.signal;
+    this.resourceLoader = options.resourceLoader ?? cachedCubismModelResourceLoader;
     this.modelUrl = options.modelUrl;
     this.defaultMotionName = String(options.defaultMotionName || "");
     this.physicsEnabled = options.physics !== false;
@@ -268,7 +276,7 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
   }
 
   static async create(options: AdvCubismModelOptions): Promise<AdvCubismModel> {
-    await ensureCubismFramework();
+    await ensureCubismFramework(options.signal);
     if (options.signal?.aborted) {
       const error = new Error(`Cubism model loading was aborted: ${options.modelUrl}`);
       error.name = "AbortError";
@@ -293,10 +301,10 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
   }
 
   private async initialize(options: AdvCubismModelOptions): Promise<void> {
-    const settingBuffer = await fetchCachedArrayBuffer(this.modelUrl, this.resourceSignal);
+    const settingBuffer = await this.resourceLoader.loadArrayBuffer(this.modelUrl, this.resourceSignal);
     this.setting = new CubismModelSettingJson(settingBuffer, settingBuffer.byteLength);
     const mocUrl = resolveResourceUrl(this.modelUrl, this.setting.getModelFileName());
-    this.loadModel(await fetchCachedArrayBuffer(mocUrl, this.resourceSignal), false);
+    this.loadModel(await this.resourceLoader.loadArrayBuffer(mocUrl, this.resourceSignal), false);
     if (!this._model) throw new Error(`Cubism model could not be created from ${mocUrl}`);
     this.pixelsPerUnitValue = Math.max(0.001, Number(this._model.getPixelsPerUnit()) || 1);
 
@@ -346,7 +354,13 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
       if (!resource) continue;
       const url = resolveResourceUrl(this.modelUrl, resource);
       textureLoads.push(
-        createCubismTexture(this.gl, url, anisotropy, this.resourceSignal).then((texture) => {
+        createCubismTexture(
+          this.gl,
+          url,
+          anisotropy,
+          this.resourceLoader,
+          this.resourceSignal,
+        ).then((texture) => {
           // Promise.all rejects as soon as one resource fails. Creation then
           // releases the partially built model while sibling requests may
           // still resolve; never bind into that released renderer, and release
@@ -392,17 +406,17 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     const userData = this.setting.getUserDataFile();
     await Promise.all([
       physics && this.physicsEnabled
-        ? fetchCachedArrayBuffer(resolveResourceUrl(this.modelUrl, physics), this.resourceSignal).then((buffer) => {
+        ? this.resourceLoader.loadArrayBuffer(resolveResourceUrl(this.modelUrl, physics), this.resourceSignal).then((buffer) => {
             if (isCurrent()) this.loadPhysics(buffer, buffer.byteLength);
           })
         : Promise.resolve(),
       pose
-        ? fetchCachedArrayBuffer(resolveResourceUrl(this.modelUrl, pose), this.resourceSignal).then((buffer) => {
+        ? this.resourceLoader.loadArrayBuffer(resolveResourceUrl(this.modelUrl, pose), this.resourceSignal).then((buffer) => {
             if (isCurrent()) this.loadPose(buffer, buffer.byteLength);
           })
         : Promise.resolve(),
       userData
-        ? fetchCachedArrayBuffer(resolveResourceUrl(this.modelUrl, userData), this.resourceSignal).then((buffer) => {
+        ? this.resourceLoader.loadArrayBuffer(resolveResourceUrl(this.modelUrl, userData), this.resourceSignal).then((buffer) => {
             if (isCurrent()) this.loadUserData(buffer, buffer.byteLength);
           })
         : Promise.resolve(),
@@ -455,7 +469,10 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     const generation = this.resourceGeneration;
     const task = (async (): Promise<CubismMotion | null> => {
       try {
-        const buffer = await fetchCachedArrayBuffer(resolveResourceUrl(this.modelUrl, entry.file), this.resourceSignal);
+        const buffer = await this.resourceLoader.loadArrayBuffer(
+          resolveResourceUrl(this.modelUrl, entry.file),
+          this.resourceSignal,
+        );
         if (this.released || generation !== this.resourceGeneration) return null;
         const motion = this.loadMotion(
           buffer,
@@ -500,7 +517,10 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     const generation = this.resourceGeneration;
     const task = (async (): Promise<CubismExpressionMotion | null> => {
       try {
-        const buffer = await fetchCachedArrayBuffer(resolveResourceUrl(this.modelUrl, entry.file), this.resourceSignal);
+        const buffer = await this.resourceLoader.loadArrayBuffer(
+          resolveResourceUrl(this.modelUrl, entry.file),
+          this.resourceSignal,
+        );
         if (this.released || generation !== this.resourceGeneration) return null;
         const expression = this.loadExpression(buffer, buffer.byteLength, name) as CubismExpressionMotion | null;
         if (!expression) throw new Error(`Cubism expression ${name} could not be decoded`);
@@ -1026,7 +1046,7 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
   }
 
   draw(
-    mvp: Matrix4,
+    mvp: Matrix4Like,
     framebuffer: WebGLFramebuffer | null,
     viewport: readonly [number, number, number, number],
     color: readonly [number, number, number, number],
@@ -1082,7 +1102,13 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
 
   async loadUnityMultiplyTexture(url: string, options: AdvCubismMultiplyTextureOptions = {}): Promise<void> {
     const generation = this.resourceGeneration;
-    const texture = await createCubismTexture(this.gl, url, 1, this.resourceSignal);
+    const texture = await createCubismTexture(
+      this.gl,
+      url,
+      1,
+      this.resourceLoader,
+      this.resourceSignal,
+    );
     // createCubismTexture allocates before this async caller regains control, so
     // release the texture if the model was torn down while it was loading.
     if (this.released || generation !== this.resourceGeneration) {

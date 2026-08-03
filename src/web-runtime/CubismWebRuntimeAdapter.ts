@@ -3,7 +3,7 @@ import type {
   StoryCharacterModelContext,
   StoryCharacterPresentation,
 } from "@haneoka/vega/plugin";
-import { Matrix4 } from "three";
+import { Matrix4 } from "./rendering/math/Matrix4";
 import type {
   CubismModelDescriptor,
   CubismRendererCharacterContext,
@@ -23,7 +23,9 @@ import {
 } from "./rendering/cubism/CubismCoreRuntime";
 import {
   configureCubismResourceCache,
+  cubismResourceLoaderFor,
   type CubismResourceCacheOptions,
+  type CubismStoryResourceResolver,
 } from "./rendering/cubism/CubismResourceCache";
 import {
   acquireCubismShaderContext,
@@ -79,8 +81,11 @@ const loadJsonObject = async (
   context: Pick<StoryCharacterModelContext, "resources" | "signal">,
   source: string,
 ): Promise<Record<string, unknown>> => {
-  const bytes = context.resources.canLoad(source)
-    ? await context.resources.load(source, context.signal)
+  const resources = context.resources as CubismStoryResourceResolver;
+  const bytes = resources.canLoad(source)
+    ? await (resources.loadSharedBytes
+        ? resources.loadSharedBytes(source, context.signal)
+        : resources.load(source, context.signal))
     : new Uint8Array(await (await fetch(source, { signal: context.signal })).arrayBuffer());
   const value = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -206,6 +211,9 @@ export const createCubismWebGlModel = async (
   },
 ): Promise<RuntimeModel> => {
   throwIfAborted(context.signal);
+  const resourceLoader = cubismResourceLoaderFor(
+    context.resources as CubismStoryResourceResolver,
+  );
   if (context.descriptor.version === 2) {
     await ensureCubism2Framework(context.signal);
     const resolved = await resolveCubism2Source(context);
@@ -220,6 +228,7 @@ export const createCubismWebGlModel = async (
         ? { canvasWorldHeight: context.descriptor.canvasWorldHeight }
         : {}),
       physicsEnabled: context.descriptor.physicsEnabled !== false,
+      resourceLoader,
     });
     if (!model) throw new Error(`Cubism 2 model could not be created for ${context.target}`);
     model.registerCatalog([...resolved.motions], [...resolved.expressions]);
@@ -241,6 +250,7 @@ export const createCubismWebGlModel = async (
       physics: context.descriptor.physicsEnabled !== false,
       breath: context.descriptor.breathEnabled === true,
       motionSync: context.descriptor.motionSync as never,
+      resourceLoader,
     });
     throwIfAborted(context.signal);
     return ownRelease(model, releaseShader);
@@ -255,6 +265,212 @@ const requestFrame = (callback: FrameRequestCallback): number =>
     ? requestAnimationFrame(callback)
     : Number(setTimeout(() => callback(performance.now()), 16));
 
+const cancelFrame = (handle: number): void => {
+  if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(handle);
+  else clearTimeout(handle);
+};
+
+const createWebGl2Context = (canvas: HTMLCanvasElement): WebGL2RenderingContext => {
+  const gl = canvas.getContext("webgl2", {
+    alpha: true,
+    antialias: true,
+    depth: false,
+    premultipliedAlpha: true,
+    powerPreference: "high-performance",
+    stencil: false,
+  });
+  if (!gl) throw new Error("Cubism canvas rendering requires WebGL2");
+  return gl;
+};
+
+const createDisplayContext = (canvas: HTMLCanvasElement): CanvasRenderingContext2D => {
+  const context = canvas.getContext("2d", { alpha: true });
+  if (!context) throw new Error("Cubism canvas rendering requires a 2D presentation context");
+  return context;
+};
+
+const waitForGpuCompletion = (
+  gl: WebGL2RenderingContext,
+  signal: AbortSignal,
+  timeoutMilliseconds = 2_000,
+): Promise<void> => {
+  throwIfAborted(signal);
+  if (gl.isContextLost()) {
+    return Promise.reject(new Error("Cubism WebGL context was lost during first-frame preparation"));
+  }
+
+  let fence: WebGLSync | null = null;
+  try {
+    fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+  } catch {
+    // Some embedded WebViews expose WebGL2 but reject sync objects. `finish`
+    // remains the only portable completion guarantee in that environment.
+  }
+  gl.flush();
+  if (!fence) {
+    throwIfAborted(signal);
+    gl.finish();
+    return Promise.resolve();
+  }
+
+  const startedAt = performance.now();
+  return new Promise<void>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let settled = false;
+    const cleanup = (): void => {
+      if (timer !== null) clearTimeout(timer);
+      signal.removeEventListener("abort", aborted);
+      gl.deleteSync(fence);
+    };
+    const settle = (error?: unknown): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error === undefined) resolve();
+      else reject(error);
+    };
+    const aborted = (): void => settle(abortReason(signal));
+    const poll = (): void => {
+      if (signal.aborted) {
+        aborted();
+        return;
+      }
+      if (gl.isContextLost()) {
+        settle(new Error("Cubism WebGL context was lost during first-frame preparation"));
+        return;
+      }
+      const status = gl.clientWaitSync(fence, 0, 0);
+      if (status === gl.ALREADY_SIGNALED || status === gl.CONDITION_SATISFIED) {
+        settle();
+        return;
+      }
+      if (status === gl.WAIT_FAILED || performance.now() - startedAt >= timeoutMilliseconds) {
+        // A driver can fail or indefinitely defer polling while still accepting
+        // commands. The bounded fallback is deliberately rare but preserves the
+        // contract that a resolved warmup has completed its GPU work.
+        try {
+          gl.finish();
+          settle();
+        } catch (error) {
+          settle(error);
+        }
+        return;
+      }
+      timer = setTimeout(poll, 4);
+    };
+    signal.addEventListener("abort", aborted, { once: true });
+    poll();
+  });
+};
+
+interface CanvasCubismContextLease {
+  readonly gl: WebGL2RenderingContext;
+  release(): void;
+}
+
+/**
+ * Portable Canvas characters share one WebGL context per runtime adapter.
+ *
+ * The episode loader intentionally keeps every referenced controller resident.
+ * Giving every resident controller its own context quickly exceeds browser and
+ * WebView context limits. Models can safely share one context because their GPU
+ * resources remain distinct and draws are submitted serially on the JS thread;
+ * each character presents the shared drawing buffer into its own 2D canvas.
+ */
+class CanvasCubismRenderPool {
+  private canvas: HTMLCanvasElement | null = null;
+  private gl: WebGL2RenderingContext | null = null;
+  private references = 0;
+  private pendingPreparations = 0;
+  private preparing = false;
+  private preparationQueue: Promise<void> = Promise.resolve();
+
+  acquire(): CanvasCubismContextLease {
+    if (!this.gl || this.gl.isContextLost() || !this.canvas) {
+      const canvas = document.createElement("canvas");
+      canvas.width = 1;
+      canvas.height = 1;
+      this.canvas = canvas;
+      this.gl = createWebGl2Context(canvas);
+    }
+    this.references += 1;
+    const gl = this.gl;
+    let released = false;
+    return {
+      gl,
+      release: () => {
+        if (released) return;
+        released = true;
+        this.references = Math.max(0, this.references - 1);
+        this.teardownIfIdle();
+      },
+    };
+  }
+
+  get canDrawSynchronously(): boolean {
+    return !this.preparing;
+  }
+
+  drawingCanvas(gl: WebGL2RenderingContext, width: number, height: number): HTMLCanvasElement {
+    if (gl !== this.gl || !this.canvas || gl.isContextLost()) {
+      throw new Error("Cubism shared WebGL context is unavailable");
+    }
+    // Grow monotonically so alternating characters do not reset the drawing
+    // buffer and driver state every frame.
+    if (this.canvas.width < width) this.canvas.width = width;
+    if (this.canvas.height < height) this.canvas.height = height;
+    return this.canvas;
+  }
+
+  prepareFirstFrame(
+    gl: WebGL2RenderingContext,
+    signal: AbortSignal,
+    submit: () => void,
+    present: () => void,
+  ): Promise<void> {
+    this.pendingPreparations += 1;
+    const prepare = this.preparationQueue
+      .catch(() => undefined)
+      .then(async () => {
+        throwIfAborted(signal);
+        if (gl !== this.gl || gl.isContextLost()) {
+          throw new Error("Cubism shared WebGL context is unavailable");
+        }
+        this.preparing = true;
+        try {
+          submit();
+          // Capture the default framebuffer in the same task. WebGL is allowed
+          // to discard it after compositing when preserveDrawingBuffer is off;
+          // the fence below still keeps warmup pending until the submitted GPU
+          // work itself has completed.
+          present();
+          await waitForGpuCompletion(gl, signal);
+          throwIfAborted(signal);
+        } finally {
+          this.preparing = false;
+        }
+      });
+    this.preparationQueue = prepare
+      .catch(() => undefined)
+      .then(() => undefined);
+    return prepare.finally(() => {
+      this.pendingPreparations = Math.max(0, this.pendingPreparations - 1);
+      this.teardownIfIdle();
+    });
+  }
+
+  private teardownIfIdle(): void {
+    if (this.references > 0 || this.pendingPreparations > 0 || this.preparing) return;
+    try {
+      this.gl?.getExtension("WEBGL_lose_context")?.loseContext();
+    } catch {
+      // Context loss is a best-effort release path on older embedded WebViews.
+    }
+    this.canvas = null;
+    this.gl = null;
+  }
+}
+
 class CanvasCubismStoryModel implements StoryCharacterModel {
   readonly format: string;
   readonly source: string;
@@ -264,15 +480,21 @@ class CanvasCubismStoryModel implements StoryCharacterModel {
   private previousTime = performance.now();
   private accumulatedTime = 0;
   private readonly playback = new CubismViewerPlaybackState();
-  private frameHandle = 0;
-  private paused = false;
+  private frameHandle: number | null = null;
+  private paused = true;
   private disposed = false;
+  private selectedMotionName = "";
+  private selectedExpressionName = "";
 
   private constructor(
+    private readonly pool: CanvasCubismRenderPool,
     private readonly gl: WebGL2RenderingContext,
+    private readonly display: CanvasRenderingContext2D,
     private readonly model: RuntimeModel,
     canvas: HTMLCanvasElement,
     descriptor: CubismModelDescriptor,
+    private readonly signal: AbortSignal,
+    private readonly releaseContext: () => void,
     private readonly targetFrameInterval: number,
   ) {
     this.element = canvas;
@@ -283,31 +505,34 @@ class CanvasCubismStoryModel implements StoryCharacterModel {
     canvas.style.display = "block";
     this.resize();
     model.primeInitialFrame(this.frame);
-    this.frameHandle = requestFrame(this.animate);
+    model.setPaused(true);
   }
 
   static async create(
     context: StoryCharacterModelContext & { readonly descriptor: CubismModelDescriptor },
     options: CreateCubismWebRuntimeAdapterOptions,
+    pool: CanvasCubismRenderPool,
   ): Promise<CanvasCubismStoryModel> {
     const canvas = options.createCanvas?.() ?? document.createElement("canvas");
-    const gl = canvas.getContext("webgl2", {
-      alpha: true,
-      antialias: true,
-      depth: false,
-      premultipliedAlpha: true,
-      powerPreference: "high-performance",
-      stencil: false,
-    });
-    if (!gl) throw new Error("Cubism canvas rendering requires WebGL2");
-    const model = await createCubismWebGlModel({ ...context, gl });
-    return new CanvasCubismStoryModel(
-      gl,
-      model,
-      canvas,
-      context.descriptor,
-      1 / Math.max(1, options.targetFrameRate ?? 60),
-    );
+    const display = createDisplayContext(canvas);
+    const lease = pool.acquire();
+    try {
+      const model = await createCubismWebGlModel({ ...context, gl: lease.gl });
+      return new CanvasCubismStoryModel(
+        pool,
+        lease.gl,
+        display,
+        model,
+        canvas,
+        context.descriptor,
+        context.signal,
+        lease.release,
+        1 / Math.max(1, options.targetFrameRate ?? 60),
+      );
+    } catch (error) {
+      lease.release();
+      throw error;
+    }
   }
 
   get isOperational(): boolean {
@@ -315,21 +540,50 @@ class CanvasCubismStoryModel implements StoryCharacterModel {
   }
 
   setPaused(paused: boolean): void {
-    this.paused = Boolean(paused);
+    const next = Boolean(paused);
+    const changed = this.paused !== next;
+    if (!changed) return;
+    this.paused = next;
     this.model.setPaused(this.paused);
     this.previousTime = performance.now();
     this.accumulatedTime = 0;
+    if (this.paused) {
+      if (this.frameHandle !== null) cancelFrame(this.frameHandle);
+      this.frameHandle = null;
+    } else {
+      this.scheduleFrame();
+    }
   }
 
   setPlaybackSpeed(rate: number): void {
     this.playback.set(rate, this.model);
   }
 
+  prepareMotion(name: string): Promise<boolean> {
+    return this.model.prepareMotion(name);
+  }
+
+  prepareExpression(name: string): Promise<boolean> {
+    return this.model.prepareExpression(name);
+  }
+
+  async prepareFirstFrame(): Promise<void> {
+    this.resize();
+    await this.pool.prepareFirstFrame(
+      this.gl,
+      this.signal,
+      () => this.draw(false, true),
+      () => this.present(),
+    );
+  }
+
   playMotion(name: string, fadeInSeconds?: number): boolean {
+    this.selectedMotionName = name.trim();
     return this.model.playMotion(name, fadeInSeconds);
   }
 
   playExpression(name: string, fadeInSeconds?: number): boolean {
+    this.selectedExpressionName = name.trim();
     return this.model.playExpression(name, fadeInSeconds);
   }
 
@@ -341,8 +595,15 @@ class CanvasCubismStoryModel implements StoryCharacterModel {
     this.element.style.opacity = String(Math.max(0, Math.min(1, finite(presentation.alpha, 1))));
     this.setPaused(presentation.paused);
     this.setPlaybackSpeed(presentation.playbackSpeed);
-    if (presentation.motionName) this.model.playMotion(presentation.motionName);
-    if (presentation.expressionName) this.model.playExpression(presentation.expressionName);
+    const motionName = presentation.motionName.trim();
+    const expressionName = presentation.expressionName.trim();
+    if (motionName && motionName !== this.selectedMotionName) this.playMotion(motionName);
+    else if (!motionName) this.selectedMotionName = "";
+    if (expressionName && expressionName !== this.selectedExpressionName) {
+      this.playExpression(expressionName);
+    } else if (!expressionName) {
+      this.selectedExpressionName = "";
+    }
   }
 
   resetExpressionParameters(): void {
@@ -352,12 +613,18 @@ class CanvasCubismStoryModel implements StoryCharacterModel {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    cancelAnimationFrame(this.frameHandle);
-    this.model.release();
+    if (this.frameHandle !== null) cancelFrame(this.frameHandle);
+    this.frameHandle = null;
+    try {
+      this.model.release();
+    } finally {
+      this.releaseContext();
+    }
   }
 
   private readonly animate = (time: number): void => {
-    if (this.disposed) return;
+    this.frameHandle = null;
+    if (this.disposed || this.paused) return;
     const elapsed = Math.max(0, Math.min(0.1, (time - this.previousTime) / 1000));
     this.previousTime = time;
     this.accumulatedTime += elapsed;
@@ -369,13 +636,20 @@ class CanvasCubismStoryModel implements StoryCharacterModel {
       }
       this.draw();
     }
-    this.frameHandle = requestFrame(this.animate);
+    this.scheduleFrame();
   };
+
+  private scheduleFrame(): void {
+    if (this.disposed || this.paused || this.frameHandle !== null) return;
+    this.frameHandle = requestFrame(this.animate);
+  }
 
   private resize(): void {
     const ratio = Math.max(1, finite(globalThis.devicePixelRatio, 1));
-    this.element.width = Math.max(1, Math.round((this.element.clientWidth || 960) * ratio));
-    this.element.height = Math.max(1, Math.round((this.element.clientHeight || 1080) * ratio));
+    const width = Math.max(1, Math.round((this.element.clientWidth || 960) * ratio));
+    const height = Math.max(1, Math.round((this.element.clientHeight || 1080) * ratio));
+    if (this.element.width !== width) this.element.width = width;
+    if (this.element.height !== height) this.element.height = height;
     const bounds: CubismDrawableBounds =
       this.model.drawableBounds(true) ?? this.model.drawableBounds(false) ?? this.model.canvasBounds();
     const fill = Math.min(this.element.width / Math.max(0.001, bounds.width), this.element.height / Math.max(0.001, bounds.height));
@@ -386,14 +660,48 @@ class CanvasCubismStoryModel implements StoryCharacterModel {
     this.mvp.set(scaleX, 0, 0, -centerX * scaleX, 0, scaleY, 0, -centerY * scaleY, 0, 0, 1, 0, 0, 0, 0, 1);
   }
 
-  private draw(): void {
-    if (this.disposed || this.gl.isContextLost()) return;
+  private draw(present = true, duringPreparation = false): void {
+    if (
+      this.disposed ||
+      this.gl.isContextLost() ||
+      (!duringPreparation && !this.pool.canDrawSynchronously)
+    )
+      return;
+    this.pool.drawingCanvas(this.gl, this.element.width, this.element.height);
     this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
     this.gl.viewport(0, 0, this.element.width, this.element.height);
+    // The pool exclusively owns this context, so establish a small explicit
+    // boundary between models instead of querying and restoring the complete
+    // WebGL profile around every Cubism draw.
+    this.gl.disable(this.gl.DEPTH_TEST);
+    this.gl.disable(this.gl.SCISSOR_TEST);
+    this.gl.disable(this.gl.STENCIL_TEST);
+    this.gl.disable(this.gl.CULL_FACE);
+    this.gl.colorMask(true, true, true, true);
+    this.gl.depthMask(false);
+    this.gl.activeTexture(this.gl.TEXTURE0);
     this.gl.clearColor(0, 0, 0, 0);
     this.gl.clear(this.gl.COLOR_BUFFER_BIT);
     this.gl.bindVertexArray(null);
     this.model.draw(this.mvp, null, [0, 0, this.element.width, this.element.height], [1, 1, 1, 1]);
+    if (present) this.present();
+  }
+
+  private present(): void {
+    if (this.disposed || this.gl.isContextLost()) return;
+    const source = this.pool.drawingCanvas(this.gl, this.element.width, this.element.height);
+    this.display.clearRect(0, 0, this.element.width, this.element.height);
+    this.display.drawImage(
+      source,
+      0,
+      0,
+      this.element.width,
+      this.element.height,
+      0,
+      0,
+      this.element.width,
+      this.element.height,
+    );
   }
 }
 
@@ -408,6 +716,7 @@ const rendererGl = (value: unknown): WebGL2RenderingContext => {
 export const createCubismWebRuntimeAdapter = (
   options: CreateCubismWebRuntimeAdapterOptions = {},
 ): CubismRuntimeAdapter => {
+  const canvasPool = new CanvasCubismRenderPool();
   configureCubismWebRuntime(options.runtime ?? {});
   if (options.resourceCache) configureCubismResourceCache(options.resourceCache);
   return {
@@ -418,7 +727,7 @@ export const createCubismWebRuntimeAdapter = (
       else await ensureCubismFramework(signal);
     },
     create(context) {
-      return CanvasCubismStoryModel.create(context, options);
+      return CanvasCubismStoryModel.create(context, options, canvasPool);
     },
     createForRenderer(context: CubismRendererCharacterContext) {
       return createCubismWebGlModel({

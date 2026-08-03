@@ -20,9 +20,12 @@ export class CubismViewerPlaybackState {
     return this.currentRate;
   }
 
-  set(rate: number, target?: CubismMotionSpeedTarget | null): void {
-    this.currentRate = normalizeCubismPlaybackRate(rate);
+  set(rate: number, target?: CubismMotionSpeedTarget | null): boolean {
+    const nextRate = normalizeCubismPlaybackRate(rate);
+    if (this.currentRate === nextRate) return false;
+    this.currentRate = nextRate;
     target?.setMotionSpeed(this.currentRate);
+    return true;
   }
 
   apply(target: CubismMotionSpeedTarget): void {
@@ -39,10 +42,16 @@ export function cubismPlaybackSteps(
   elapsedSeconds: number,
   playbackRate: number,
 ): readonly number[] {
-  const elapsed = Math.max(0, Number.isFinite(elapsedSeconds) ? elapsedSeconds : 0);
+  const elapsed = Math.max(
+    0,
+    Number.isFinite(elapsedSeconds) ? elapsedSeconds : 0,
+  );
   if (elapsed === 0) return [0];
   const rate = normalizeCubismPlaybackRate(playbackRate);
-  const count = Math.max(1, Math.ceil((elapsed * rate) / MAXIMUM_MOTION_STEP_SECONDS));
+  const count = Math.max(
+    1,
+    Math.ceil((elapsed * rate) / MAXIMUM_MOTION_STEP_SECONDS),
+  );
   const step = elapsed / count;
   return Array.from({ length: count }, () => step);
 }
