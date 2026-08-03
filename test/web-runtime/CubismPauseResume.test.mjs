@@ -61,7 +61,10 @@ test("viewer load and pause wiring remain part of the public runtime contract", 
   assert.match(viewerSource, /this\.harmonicMotion\.setPaused\(true\);/);
   assert.match(viewerSource, /this\.harmonicMotion\.setPaused\(false\);[\s\S]*this\.model\?\.setPaused\(false\);/);
   assert.match(viewerSource, /if \(this\.model && deltaSeconds != null\) \{/);
+  assert.match(viewerSource, /playMotionAt\([\s\S]*\{ loop: this\.loopMotionName === name \},/);
   assert.match(modelSource, /this\.pausedMotionRequest\.retain\(request\);/);
   assert.match(modelSource, /const motion = this\.pausedMotionRequest\.take\(\);/);
   assert.match(modelSource, /A lazy request may have started before Pause and completed during it\./);
+  assert.match(modelSource, /readonly positionSeconds\?: number;/);
+  assert.match(modelSource, /positionAdvCubismMotionQueueEntry\([\s\S]*request\.positionSeconds,[\s\S]*request\.positionOptions,/);
 });

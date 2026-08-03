@@ -582,6 +582,17 @@ class CanvasCubismStoryModel implements StoryCharacterModel {
     return this.model.playMotion(name, fadeInSeconds);
   }
 
+  /** Restore an authored motion after host transport seek/retry. */
+  playMotionAt(
+    name: string,
+    positionSeconds: number,
+    fadeInSeconds?: number,
+    options?: { loop?: boolean },
+  ): boolean {
+    this.selectedMotionName = name.trim();
+    return this.model.playMotionAt(name, positionSeconds, fadeInSeconds, options);
+  }
+
   playExpression(name: string, fadeInSeconds?: number): boolean {
     this.selectedExpressionName = name.trim();
     return this.model.playExpression(name, fadeInSeconds);

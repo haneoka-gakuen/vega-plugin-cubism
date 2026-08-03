@@ -27,6 +27,10 @@ import {
 import type { StoryCharacterModel } from "../StoryCharacterModel";
 import { ensureCubismFramework } from "./CubismCoreRuntime";
 import { resolveCubismFadeIn } from "./AdvCubismMotionFade";
+import {
+  positionAdvCubismMotionQueueEntry,
+  type AdvCubismMotionPositionOptions,
+} from "./AdvCubismMotionPosition";
 import { PausedCubismRequest } from "./PausedCubismRequest";
 import {
   cachedCubismModelResourceLoader,
@@ -114,6 +118,8 @@ interface CubismPlaybackRequest {
   readonly sequence: number;
   readonly name: string;
   readonly fadeInSeconds?: number;
+  readonly positionSeconds?: number;
+  readonly positionOptions?: AdvCubismMotionPositionOptions;
 }
 
 function resolveResourceUrl(baseUrl: string, resource: string): string {
@@ -682,6 +688,25 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
   }
 
   playMotion(name: string, fadeInSeconds?: number): boolean {
+    return this.requestMotion(name, fadeInSeconds);
+  }
+
+  /** Restore an authored motion at an absolute clip-local transport phase. */
+  playMotionAt(
+    name: string,
+    positionSeconds: number,
+    fadeInSeconds?: number,
+    positionOptions: AdvCubismMotionPositionOptions = {},
+  ): boolean {
+    return this.requestMotion(name, fadeInSeconds, positionSeconds, positionOptions);
+  }
+
+  private requestMotion(
+    name: string,
+    fadeInSeconds?: number,
+    positionSeconds?: number,
+    positionOptions?: AdvCubismMotionPositionOptions,
+  ): boolean {
     if (!name || (!this.motions.has(name) && !this.buildMotionIndex().has(name))) return false;
     if (this.requestedMotion?.name && this.requestedMotion.name !== name) {
       this.motionRetries.succeed(this.requestedMotion.name);
@@ -690,6 +715,8 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
       sequence: ++this.motionRequestSequence,
       name,
       fadeInSeconds,
+      positionSeconds,
+      positionOptions,
     };
     this.requestedMotion = request;
     if (this.paused) {
@@ -766,7 +793,18 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     const motion = this.motions.get(request.name);
     if (!motion) return false;
     motion.setFadeInTime(resolveCubismFadeIn(request.fadeInSeconds, this.motionFadeInTimes.get(request.name)));
-    this._motionManager.startMotionPriority(motion, false, MOTION_PRIORITY_FORCE);
+    const handle = this._motionManager.startMotionPriority(motion, false, MOTION_PRIORITY_FORCE);
+    if (request.positionSeconds != null) {
+      const entry = this._motionManager.getCubismMotionQueueEntry(handle);
+      if (!entry) return false;
+      positionAdvCubismMotionQueueEntry(
+        entry,
+        motion,
+        this._motionManager._userTimeSeconds,
+        request.positionSeconds,
+        request.positionOptions,
+      );
+    }
     return true;
   }
 

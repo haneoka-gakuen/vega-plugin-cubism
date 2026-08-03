@@ -8,6 +8,7 @@ export {
   type CubismDrawableBounds,
   type CubismParameterValue,
 } from "./rendering/cubism/AdvCubismModel";
+export type { AdvCubismMotionPositionOptions } from "./rendering/cubism/AdvCubismMotionPosition";
 export {
   AdvHarmonicMotionController,
   type AdvHarmonicMotionData,

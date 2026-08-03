@@ -33,6 +33,8 @@ export interface StoryCharacterModel {
   resetMotionSync(): void;
 
   playMotion(name: string, fadeInSeconds?: number): boolean;
+  /** Restore an authored motion at an absolute clip-local transport phase. */
+  playMotionAt(name: string, positionSeconds: number, fadeInSeconds?: number, options?: { loop?: boolean }): boolean;
   playExpression(name: string, fadeInSeconds?: number): boolean;
   prepareMotion(name: string): Promise<boolean>;
   prepareExpression(name: string): Promise<boolean>;

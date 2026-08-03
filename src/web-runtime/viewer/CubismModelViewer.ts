@@ -371,6 +371,16 @@ export class CubismModelViewer {
     return this.model?.playMotion(name, fadeInSeconds) ?? false;
   }
 
+  /** Restore an authored motion after host transport seek/retry. */
+  playMotionAt(name: string, positionSeconds: number, fadeInSeconds?: number): boolean {
+    return this.model?.playMotionAt(
+      name,
+      positionSeconds,
+      fadeInSeconds,
+      { loop: this.loopMotionName === name },
+    ) ?? false;
+  }
+
   prepareMotion(name: string): Promise<boolean> {
     return this.model?.prepareMotion(name) ?? Promise.resolve(false);
   }

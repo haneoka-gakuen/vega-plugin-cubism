@@ -780,6 +780,11 @@ export class Cubism2Model implements StoryCharacterModel {
     return false;
   }
 
+  /** Cubism 2's wall-clock MotionQueueManager exposes no reliable seekable queue timestamp. */
+  playMotionAt(_name: string, _positionSeconds: number, _fadeInSeconds?: number): boolean {
+    return false;
+  }
+
   playExpression(name: string, fadeInSeconds?: number): boolean {
     if (!name || !this.expressionIndex.has(name) || this.released) return false;
     if (this.requestedExpression?.name && this.requestedExpression.name !== name) {
