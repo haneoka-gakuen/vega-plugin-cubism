@@ -35,10 +35,7 @@ export interface CubismStoryResourceResolver {
   canLoad(source: string): boolean;
   load(source: string, signal?: AbortSignal): Promise<Uint8Array>;
   /** Trusted immutable fast path introduced by Vega 0.1. */
-  loadSharedBytes?(
-    source: string,
-    signal?: AbortSignal,
-  ): Promise<Readonly<Uint8Array>>;
+  loadSharedBytes?(source: string, signal?: AbortSignal): Promise<Readonly<Uint8Array>>;
 }
 
 /**
@@ -104,17 +101,11 @@ function touchArrayBuffer(key: string, entry: ArrayBufferCacheEntry): void {
   arrayBufferCache.set(key, entry);
 }
 
-function deleteArrayBufferEntry(
-  key: string,
-  expected?: ArrayBufferCacheEntry,
-): void {
+function deleteArrayBufferEntry(key: string, expected?: ArrayBufferCacheEntry): void {
   const entry = arrayBufferCache.get(key);
   if (!entry || (expected && entry !== expected)) return;
   arrayBufferCache.delete(key);
-  arrayBufferBytes = Math.max(
-    0,
-    arrayBufferBytes - (entry.byteLength ?? 0),
-  );
+  arrayBufferBytes = Math.max(0, arrayBufferBytes - (entry.byteLength ?? 0));
 }
 
 function trimArrayBufferCache(): void {
@@ -134,9 +125,7 @@ function trimArrayBufferCache(): void {
 
 function cacheLimit(value: unknown, fallback: number): number {
   const number = Number(value);
-  return Number.isFinite(number)
-    ? Math.max(0, Math.trunc(number))
-    : fallback;
+  return Number.isFinite(number) ? Math.max(0, Math.trunc(number)) : fallback;
 }
 
 /**
@@ -146,29 +135,16 @@ function cacheLimit(value: unknown, fallback: number): number {
  * only. Binary resources use an independent byte budget.
  */
 export function configureCubismResourceCache(entryLimit: number): void;
-export function configureCubismResourceCache(
-  options: CubismResourceCacheOptions,
-): void;
-export function configureCubismResourceCache(
-  options: number | CubismResourceCacheOptions,
-): void {
+export function configureCubismResourceCache(options: CubismResourceCacheOptions): void;
+export function configureCubismResourceCache(options: number | CubismResourceCacheOptions): void {
   if (typeof options === "number") {
-    imageEntryLimit = Math.max(
-      8,
-      cacheLimit(options, DEFAULT_IMAGE_ENTRY_LIMIT),
-    );
+    imageEntryLimit = Math.max(8, cacheLimit(options, DEFAULT_IMAGE_ENTRY_LIMIT));
   } else {
     if (options.imageEntryLimit !== undefined) {
-      imageEntryLimit = cacheLimit(
-        options.imageEntryLimit,
-        DEFAULT_IMAGE_ENTRY_LIMIT,
-      );
+      imageEntryLimit = cacheLimit(options.imageEntryLimit, DEFAULT_IMAGE_ENTRY_LIMIT);
     }
     if (options.arrayBufferByteLimit !== undefined) {
-      arrayBufferByteLimit = cacheLimit(
-        options.arrayBufferByteLimit,
-        DEFAULT_ARRAY_BUFFER_BYTE_LIMIT,
-      );
+      arrayBufferByteLimit = cacheLimit(options.arrayBufferByteLimit, DEFAULT_ARRAY_BUFFER_BYTE_LIMIT);
     }
   }
   while (imageCache.size > imageEntryLimit) {
@@ -179,11 +155,7 @@ export function configureCubismResourceCache(
   trimArrayBufferCache();
 }
 
-function retainFulfilledArrayBuffer(
-  url: string,
-  entry: ArrayBufferCacheEntry,
-  buffer: ArrayBuffer,
-): ArrayBuffer {
+function retainFulfilledArrayBuffer(url: string, entry: ArrayBufferCacheEntry, buffer: ArrayBuffer): ArrayBuffer {
   if (arrayBufferCache.get(url) !== entry) return buffer;
   if (buffer.byteLength > arrayBufferByteLimit) {
     deleteArrayBufferEntry(url, entry);
@@ -321,14 +293,8 @@ function ownedArrayBuffer(bytes: Readonly<Uint8Array>): ArrayBuffer {
   return Uint8Array.from(bytes).buffer;
 }
 
-function decodeImageBuffer(
-  source: string,
-  buffer: ArrayBuffer,
-  signal?: AbortSignal,
-): Promise<TexImageSource> {
-  const objectUrl = URL.createObjectURL(
-    new Blob([buffer], { type: cubismContentType(source) }),
-  );
+function decodeImageBuffer(source: string, buffer: ArrayBuffer, signal?: AbortSignal): Promise<TexImageSource> {
+  const objectUrl = URL.createObjectURL(new Blob([buffer], { type: cubismContentType(source) }));
   return new Promise<TexImageSource>((resolve, reject) => {
     const image = new Image();
     let settled = false;
@@ -345,8 +311,7 @@ function decodeImageBuffer(
       callback();
     };
     const loaded = (): void => finish(() => resolve(image));
-    const failed = (): void =>
-      finish(() => reject(new Error(`Failed to decode Cubism image ${source}`)));
+    const failed = (): void => finish(() => reject(new Error(`Failed to decode Cubism image ${source}`)));
     const aborted = (): void =>
       finish(() => {
         image.src = "";
@@ -404,18 +369,13 @@ function waitForResolverImage(
  * textures without allowing identically named resources from another project
  * to alias each other.
  */
-export function cubismResourceLoaderFor(
-  resources: CubismStoryResourceResolver,
-): CubismModelResourceLoader {
+export function cubismResourceLoaderFor(resources: CubismStoryResourceResolver): CubismModelResourceLoader {
   const owner = resources as object;
   const existing = resolverLoaders.get(owner);
   if (existing) return existing;
 
   const images = new Map<string, ResolverImageCacheEntry>();
-  const touchResolverImage = (
-    url: string,
-    entry: ResolverImageCacheEntry,
-  ): void => {
+  const touchResolverImage = (url: string, entry: ResolverImageCacheEntry): void => {
     if (images.get(url) !== entry) return;
     images.delete(url);
     images.set(url, entry);
@@ -437,15 +397,10 @@ export function cubismResourceLoaderFor(
     // Vega already owns the bounded byte LRU and in-flight deduplication. Do
     // not retain a second unbounded ArrayBuffer map in this plugin.
     return Promise.resolve(
-      resources.loadSharedBytes
-        ? resources.loadSharedBytes(url, signal)
-        : resources.load(url, signal),
+      resources.loadSharedBytes ? resources.loadSharedBytes(url, signal) : resources.load(url, signal),
     ).then(ownedArrayBuffer);
   };
-  const loadDecodedImage = (
-    url: string,
-    signal?: AbortSignal,
-  ): Promise<TexImageSource> => {
+  const loadDecodedImage = (url: string, signal?: AbortSignal): Promise<TexImageSource> => {
     if (signal?.aborted) return Promise.reject(abortError(url));
     if (!resources.canLoad(url)) return loadCachedImage(url, signal);
     let entry = images.get(url);
@@ -458,21 +413,21 @@ export function cubismResourceLoaderFor(
         settled: false,
       };
       const created = entry;
-      created.pending = loadBuffer(url, controller.signal).then(
-        (buffer) => decodeImageBuffer(url, buffer, controller.signal),
-      ).then(
-        (image) => {
-          created.settled = true;
-          touchResolverImage(url, created);
-          trimResolverImages();
-          return image;
-        },
-        (error: unknown) => {
-          created.settled = true;
-          if (images.get(url) === created) images.delete(url);
-          throw error;
-        },
-      );
+      created.pending = loadBuffer(url, controller.signal)
+        .then((buffer) => decodeImageBuffer(url, buffer, controller.signal))
+        .then(
+          (image) => {
+            created.settled = true;
+            touchResolverImage(url, created);
+            trimResolverImages();
+            return image;
+          },
+          (error: unknown) => {
+            created.settled = true;
+            if (images.get(url) === created) images.delete(url);
+            throw error;
+          },
+        );
       images.set(url, created);
       trimResolverImages();
     } else {

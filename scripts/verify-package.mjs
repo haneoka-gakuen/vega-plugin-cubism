@@ -1,20 +1,10 @@
-import {
-  access,
-  lstat,
-  readFile,
-  readdir,
-  realpath,
-  stat,
-} from "node:fs/promises";
+import { access, lstat, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import {
-  restrictedCubismContentReason,
-  restrictedCubismPathReason,
-} from "./distribution-policy.mjs";
+import { restrictedCubismContentReason, restrictedCubismPathReason } from "./distribution-policy.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const manifestPath = resolve(root, "package.json");
@@ -22,21 +12,16 @@ const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
 
 const policies = {
   "@haneoka/vega-plugin-cubism": {
-    repository:
-      "git+https://github.com/haneoka-gakuen/vega-plugin-cubism.git",
+    repository: "git+https://github.com/haneoka-gakuen/vega-plugin-cubism.git",
     peerDependencies: ["@haneoka/vega"],
-    allowedImports: [
-      "@haneoka/vega",
-      "@haneoka/vega/plugin",
-    ],
+    allowedImports: ["@haneoka/vega", "@haneoka/vega/plugin"],
     runtimeDependencies: [],
     forbiddenDependency: /(?:live2d|cubism|motionsync)/iu,
     externalRuntime: true,
     forbidMedia: true,
   },
   "@haneoka/vega-plugin-spine": {
-    repository:
-      "git+https://github.com/haneoka-gakuen/vega-plugin-spine.git",
+    repository: "git+https://github.com/haneoka-gakuen/vega-plugin-spine.git",
     peerDependencies: ["@haneoka/vega"],
     allowedImports: ["@haneoka/vega", "@haneoka/vega/plugin"],
     forbiddenDependency: /(?:@esotericsoftware|spine)/iu,
@@ -44,12 +29,10 @@ const policies = {
     forbidMedia: true,
   },
   "@haneoka/vega-renderer-pixi": {
-    repository:
-      "git+https://github.com/haneoka-gakuen/vega-renderer-pixi.git",
+    repository: "git+https://github.com/haneoka-gakuen/vega-renderer-pixi.git",
     peerDependencies: ["@haneoka/vega", "pixi.js"],
     allowedImports: ["@haneoka/vega", "pixi.js"],
-    forbiddenDependency:
-      /(?:live2d|cubism|motionsync|@esotericsoftware|spine)/iu,
+    forbiddenDependency: /(?:live2d|cubism|motionsync|@esotericsoftware|spine)/iu,
     externalRuntime: false,
     forbidMedia: false,
   },
@@ -80,12 +63,7 @@ if (policy.externalRuntime && manifest.vega?.externalRuntime !== true) {
   fail("adapter-only packages must declare vega.externalRuntime");
 }
 
-const dependencySections = [
-  "dependencies",
-  "devDependencies",
-  "optionalDependencies",
-  "peerDependencies",
-];
+const dependencySections = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"];
 for (const section of dependencySections) {
   for (const name of Object.keys(manifest[section] ?? {})) {
     if (policy.forbiddenDependency.test(name)) {
@@ -101,25 +79,17 @@ if (JSON.stringify(actualRuntimeDependencies) !== JSON.stringify(expectedRuntime
 if (Object.keys(manifest.optionalDependencies ?? {}).length > 0) {
   fail("optional runtime dependencies are not allowed");
 }
-if (
-  Array.isArray(manifest.bundledDependencies) &&
-  manifest.bundledDependencies.length > 0
-) {
+if (Array.isArray(manifest.bundledDependencies) && manifest.bundledDependencies.length > 0) {
   fail("bundled dependencies are not allowed");
 }
-if (
-  Array.isArray(manifest.bundleDependencies) &&
-  manifest.bundleDependencies.length > 0
-) {
+if (Array.isArray(manifest.bundleDependencies) && manifest.bundleDependencies.length > 0) {
   fail("bundleDependencies are not allowed");
 }
 
 const actualPeers = Object.keys(manifest.peerDependencies ?? {}).sort();
 const expectedPeers = [...policy.peerDependencies].sort();
 if (JSON.stringify(actualPeers) !== JSON.stringify(expectedPeers)) {
-  fail(
-    `peer dependencies must be exactly ${expectedPeers.join(", ") || "(none)"}`,
-  );
+  fail(`peer dependencies must be exactly ${expectedPeers.join(", ") || "(none)"}`);
 }
 
 const collectTargets = (value) => {
@@ -131,12 +101,7 @@ const collectTargets = (value) => {
 };
 
 const targets = new Set(
-  [
-    manifest.main,
-    manifest.module,
-    manifest.types,
-    ...collectTargets(manifest.exports),
-  ].filter(
+  [manifest.main, manifest.module, manifest.types, ...collectTargets(manifest.exports)].filter(
     (value) => typeof value === "string" && value.startsWith("./dist/"),
   ),
 );
@@ -156,9 +121,7 @@ const insideRoot = (path) => {
   const pathFromRoot = relative(root, path);
   return (
     pathFromRoot === "" ||
-    (!pathFromRoot.startsWith(`..${sep}`) &&
-      pathFromRoot !== ".." &&
-      !pathFromRoot.startsWith(sep))
+    (!pathFromRoot.startsWith(`..${sep}`) && pathFromRoot !== ".." && !pathFromRoot.startsWith(sep))
   );
 };
 
@@ -169,10 +132,7 @@ const walkRepository = async (path, relativePath = "") => {
   if (info.isDirectory()) {
     for (const entry of await readdir(path)) {
       if (!relativePath && ignoredRoots.has(entry)) continue;
-      await walkRepository(
-        resolve(path, entry),
-        relativePath ? `${relativePath}/${entry}` : entry,
-      );
+      await walkRepository(resolve(path, entry), relativePath ? `${relativePath}/${entry}` : entry);
     }
     return;
   }
@@ -180,29 +140,18 @@ const walkRepository = async (path, relativePath = "") => {
 };
 
 await walkRepository(root);
-const restrictedRepositoryFiles = repositoryFiles.filter(
-  (path) => restrictedCubismPathReason(path),
-);
+const restrictedRepositoryFiles = repositoryFiles.filter((path) => restrictedCubismPathReason(path));
 if (restrictedRepositoryFiles.length > 0) {
-  fail(
-    `restricted SDK, runtime, model, or asset payload:\n${restrictedRepositoryFiles.join("\n")}`,
-  );
+  fail(`restricted SDK, runtime, model, or asset payload:\n${restrictedRepositoryFiles.join("\n")}`);
 }
 
 for (const path of repositoryFiles) {
-  const reason = restrictedCubismContentReason(
-    await readFile(resolve(root, path)),
-    path,
-  );
+  const reason = restrictedCubismContentReason(await readFile(resolve(root, path)), path);
   if (reason) fail(`${reason} found in repository file ${path}`);
 }
 
 if (manifest.name === "@haneoka/vega-plugin-cubism") {
-  for (const required of [
-    "LICENSE",
-    "CUBISM-LICENSE.md",
-    "NOTICE.md",
-  ]) {
+  for (const required of ["LICENSE", "CUBISM-LICENSE.md", "NOTICE.md"]) {
     if (!repositoryFiles.includes(required)) {
       fail(`package is missing distribution notice ${required}`);
     }
@@ -218,13 +167,9 @@ if (manifest.name === "@haneoka/vega-plugin-cubism") {
   );
   const restrictedHistory = reachableObjects
     .split(/\r?\n/u)
-    .filter((row) =>
-      restrictedCubismPathReason(row.replace(/^[0-9a-f]+\s+/u, "")),
-    );
+    .filter((row) => restrictedCubismPathReason(row.replace(/^[0-9a-f]+\s+/u, "")));
   if (restrictedHistory.length > 0) {
-    fail(
-      `reachable Git history still contains restricted SDK/runtime/model paths:\n${restrictedHistory.join("\n")}`,
-    );
+    fail(`reachable Git history still contains restricted SDK/runtime/model paths:\n${restrictedHistory.join("\n")}`);
   }
 }
 
@@ -240,10 +185,7 @@ const walkPublishable = async (path, relativePath) => {
   if (info.isSymbolicLink()) fail(`publish path is a symbolic link: ${relativePath}`);
   if (info.isDirectory()) {
     for (const entry of await readdir(path)) {
-      await walkPublishable(
-        resolve(path, entry),
-        relativePath ? `${relativePath}/${entry}` : entry,
-      );
+      await walkPublishable(resolve(path, entry), relativePath ? `${relativePath}/${entry}` : entry);
     }
     return;
   }
@@ -269,29 +211,22 @@ for (const entry of manifest.files ?? []) {
   await walkPublishable(path, entry);
 }
 
-const restrictedPublishableFiles = publishableFiles.filter(
-  (path) => restrictedCubismPathReason(path),
-);
+const restrictedPublishableFiles = publishableFiles.filter((path) => restrictedCubismPathReason(path));
 if (restrictedPublishableFiles.length > 0) {
-  fail(
-    `restricted publish payload:\n${restrictedPublishableFiles.join("\n")}`,
-  );
+  fail(`restricted publish payload:\n${restrictedPublishableFiles.join("\n")}`);
 }
 if (publishableBytes > 5 * 1024 * 1024) {
   fail(`publish payload is unexpectedly large (${publishableBytes} bytes)`);
 }
 
 const builtJavaScript = await readFile(resolve(root, "dist/index.js"), "utf8");
-const importPattern =
-  /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s*)["']([^"']+)["']/gu;
+const importPattern = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s*)["']([^"']+)["']/gu;
 const externalImports = new Set(
   [...builtJavaScript.matchAll(importPattern)]
     .map((match) => match[1])
     .filter((specifier) => specifier && !specifier.startsWith(".")),
 );
-const unexpectedImports = [...externalImports].filter(
-  (specifier) => !policy.allowedImports.includes(specifier),
-);
+const unexpectedImports = [...externalImports].filter((specifier) => !policy.allowedImports.includes(specifier));
 if (unexpectedImports.length > 0) {
   fail(`unexpected runtime imports: ${unexpectedImports.join(", ")}`);
 }
@@ -302,10 +237,7 @@ if (manifest.name === "@haneoka/vega-plugin-cubism") {
     "dist/web-runtime/vega-cubism-web-viewer.mjs",
   ]) {
     const source = await readFile(resolve(root, output), "utf8");
-    if (
-      source.includes("Multiple instances of Three.js") ||
-      source.includes("__THREE__")
-    ) {
+    if (source.includes("Multiple instances of Three.js") || source.includes("__THREE__")) {
       fail(`${output} embeds a second Three.js runtime`);
     }
   }
@@ -332,10 +264,7 @@ if (manifest.name === "@haneoka/vega-plugin-cubism") {
       Version: { [versionGetterName]: () => 0 },
       Memory: { initializeAmountOfMemory() {} },
     };
-    const runtimeUrl = new URL(
-      "../dist/web-runtime/vega-cubism-web-runtime.mjs",
-      import.meta.url,
-    ).href;
+    const runtimeUrl = new URL("../dist/web-runtime/vega-cubism-web-runtime.mjs", import.meta.url).href;
     const first = await import(`${runtimeUrl}?verify-instance=first`);
     const second = await import(`${runtimeUrl}?verify-instance=second`);
     await first.createCubismWebRuntimeAdapter().prepare(3);

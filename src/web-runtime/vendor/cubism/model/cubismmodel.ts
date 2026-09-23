@@ -73,12 +73,18 @@ export class DrawableCullingData {
  * Mocデータから生成されるモデルのクラス。
  */
 export class CubismModel {
+  private _geometryRevision = 0;
+
+  public getGeometryRevision(): number {
+    return this._geometryRevision;
+  }
   /**
    * モデルのパラメータの更新
    */
   public update(): void {
     // Update model
     this._model.update();
+    this._geometryRevision += 1;
 
     this._model.drawables.resetDynamicFlags();
   }

@@ -93,17 +93,11 @@ function touchArrayBuffer(key: string, entry: ArrayBufferCacheEntry): void {
   arrayBufferCache.set(key, entry);
 }
 
-function deleteArrayBufferEntry(
-  key: string,
-  expected?: ArrayBufferCacheEntry,
-): void {
+function deleteArrayBufferEntry(key: string, expected?: ArrayBufferCacheEntry): void {
   const entry = arrayBufferCache.get(key);
   if (!entry || (expected && entry !== expected)) return;
   arrayBufferCache.delete(key);
-  arrayBufferBytes = Math.max(
-    0,
-    arrayBufferBytes - (entry.byteLength ?? 0),
-  );
+  arrayBufferBytes = Math.max(0, arrayBufferBytes - (entry.byteLength ?? 0));
 }
 
 function trimArrayBufferCache(): void {
@@ -123,9 +117,7 @@ function trimArrayBufferCache(): void {
 
 function cacheLimit(value: unknown, fallback: number): number {
   const number = Number(value);
-  return Number.isFinite(number)
-    ? Math.max(0, Math.trunc(number))
-    : fallback;
+  return Number.isFinite(number) ? Math.max(0, Math.trunc(number)) : fallback;
 }
 
 /**
@@ -135,29 +127,16 @@ function cacheLimit(value: unknown, fallback: number): number {
  * only. Binary resources use an independent byte budget.
  */
 export function configureCubismResourceCache(entryLimit: number): void;
-export function configureCubismResourceCache(
-  options: CubismResourceCacheOptions,
-): void;
-export function configureCubismResourceCache(
-  options: number | CubismResourceCacheOptions,
-): void {
+export function configureCubismResourceCache(options: CubismResourceCacheOptions): void;
+export function configureCubismResourceCache(options: number | CubismResourceCacheOptions): void {
   if (typeof options === "number") {
-    imageEntryLimit = Math.max(
-      8,
-      cacheLimit(options, DEFAULT_IMAGE_ENTRY_LIMIT),
-    );
+    imageEntryLimit = Math.max(8, cacheLimit(options, DEFAULT_IMAGE_ENTRY_LIMIT));
   } else {
     if (options.imageEntryLimit !== undefined) {
-      imageEntryLimit = cacheLimit(
-        options.imageEntryLimit,
-        DEFAULT_IMAGE_ENTRY_LIMIT,
-      );
+      imageEntryLimit = cacheLimit(options.imageEntryLimit, DEFAULT_IMAGE_ENTRY_LIMIT);
     }
     if (options.arrayBufferByteLimit !== undefined) {
-      arrayBufferByteLimit = cacheLimit(
-        options.arrayBufferByteLimit,
-        DEFAULT_ARRAY_BUFFER_BYTE_LIMIT,
-      );
+      arrayBufferByteLimit = cacheLimit(options.arrayBufferByteLimit, DEFAULT_ARRAY_BUFFER_BYTE_LIMIT);
     }
   }
   while (imageCache.size > imageEntryLimit) {
@@ -168,11 +147,7 @@ export function configureCubismResourceCache(
   trimArrayBufferCache();
 }
 
-function retainFulfilledArrayBuffer(
-  url: string,
-  entry: ArrayBufferCacheEntry,
-  buffer: ArrayBuffer,
-): ArrayBuffer {
+function retainFulfilledArrayBuffer(url: string, entry: ArrayBufferCacheEntry, buffer: ArrayBuffer): ArrayBuffer {
   if (arrayBufferCache.get(url) !== entry) return buffer;
   if (buffer.byteLength > arrayBufferByteLimit) {
     deleteArrayBufferEntry(url, entry);

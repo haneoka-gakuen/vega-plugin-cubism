@@ -1,8 +1,5 @@
 import { ensureMotionSyncCore } from "./CubismCoreRuntime";
-import type {
-  AdvMotionSyncSetting,
-  AdvVoiceMotionSyncPcmSnapshot,
-} from "../../types";
+import type { AdvMotionSyncSetting, AdvVoiceMotionSyncPcmSnapshot } from "../../types";
 import { advMotionSyncNeutralValues } from "./AdvMotionSyncMath";
 
 export {
@@ -532,15 +529,9 @@ export class AdvMotionSyncCoreAdapter {
       const heap = motionSyncFloatHeap(core);
       const heapIndex = valuesPtr >>> 2;
       const rawValues =
-        valuesPtr > 0 &&
-        (valuesPtr & 3) === 0 &&
-        heap &&
-        heapIndex + this.parameters.length <= heap.length
+        valuesPtr > 0 && (valuesPtr & 3) === 0 && heap && heapIndex + this.parameters.length <= heap.length
           ? heap.subarray(heapIndex, heapIndex + this.parameters.length)
-          : core.ToPointer.GetValuesFromAnalysisResult(
-              valuesPtr,
-              this.parameters.length,
-            );
+          : core.ToPointer.GetValuesFromAnalysisResult(valuesPtr, this.parameters.length);
       this.postProcess(rawValues);
     }
   }
@@ -550,17 +541,9 @@ export class AdvMotionSyncCoreAdapter {
     if (!core || count <= 0) return;
     const heap = motionSyncFloatHeap(core);
     const heapIndex = this.samplePtr >>> 2;
-    if (
-      this.samplePtr > 0 &&
-      (this.samplePtr & 3) === 0 &&
-      heap &&
-      heapIndex + count <= heap.length
-    ) {
+    if (this.samplePtr > 0 && (this.samplePtr & 3) === 0 && heap && heapIndex + count <= heap.length) {
       const first = Math.min(count, this.sampleBuffer.length - this.sampleBufferStart);
-      heap.set(
-        this.sampleBuffer.subarray(this.sampleBufferStart, this.sampleBufferStart + first),
-        heapIndex,
-      );
+      heap.set(this.sampleBuffer.subarray(this.sampleBufferStart, this.sampleBufferStart + first), heapIndex);
       const remaining = count - first;
       if (remaining > 0) {
         heap.set(this.sampleBuffer.subarray(0, remaining), heapIndex + first);

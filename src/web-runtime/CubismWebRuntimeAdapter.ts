@@ -1,14 +1,6 @@
-import type {
-  StoryCharacterModel,
-  StoryCharacterModelContext,
-  StoryCharacterPresentation,
-} from "@haneoka/vega/plugin";
+import type { StoryCharacterModel, StoryCharacterModelContext, StoryCharacterPresentation } from "@haneoka/vega/plugin";
 import { Matrix4 } from "./rendering/math/Matrix4";
-import type {
-  CubismModelDescriptor,
-  CubismRendererCharacterContext,
-  CubismRuntimeAdapter,
-} from "../index";
+import type { CubismModelDescriptor, CubismRendererCharacterContext, CubismRuntimeAdapter } from "../index";
 import {
   AdvCubismModel,
   type CubismDrawableBounds,
@@ -27,14 +19,8 @@ import {
   type CubismResourceCacheOptions,
   type CubismStoryResourceResolver,
 } from "./rendering/cubism/CubismResourceCache";
-import {
-  acquireCubismShaderContext,
-  releaseCubismShaderContext,
-} from "./vendor/cubism/rendering/cubismshader_webgl";
-import {
-  cubismPlaybackSteps,
-  CubismViewerPlaybackState,
-} from "./viewer/CubismPlaybackClock";
+import { acquireCubismShaderContext, releaseCubismShaderContext } from "./vendor/cubism/rendering/cubismshader_webgl";
+import { cubismPlaybackSteps, CubismViewerPlaybackState } from "./viewer/CubismPlaybackClock";
 
 type RuntimeModel = AdvCubismModel | Cubism2Model;
 
@@ -211,9 +197,7 @@ export const createCubismWebGlModel = async (
   },
 ): Promise<RuntimeModel> => {
   throwIfAborted(context.signal);
-  const resourceLoader = cubismResourceLoaderFor(
-    context.resources as CubismStoryResourceResolver,
-  );
+  const resourceLoader = cubismResourceLoaderFor(context.resources as CubismStoryResourceResolver);
   if (context.descriptor.version === 2) {
     await ensureCubism2Framework(context.signal);
     const resolved = await resolveCubism2Source(context);
@@ -224,9 +208,7 @@ export const createCubismWebGlModel = async (
       textureUrls: [...resolved.textureUrls],
       ...(resolved.physicsUrl ? { physicsUrl: resolved.physicsUrl } : {}),
       ...(context.descriptor.pixelsPerUnit ? { pixelsPerUnit: context.descriptor.pixelsPerUnit } : {}),
-      ...(context.descriptor.canvasWorldHeight
-        ? { canvasWorldHeight: context.descriptor.canvasWorldHeight }
-        : {}),
+      ...(context.descriptor.canvasWorldHeight ? { canvasWorldHeight: context.descriptor.canvasWorldHeight } : {}),
       physicsEnabled: context.descriptor.physicsEnabled !== false,
       resourceLoader,
     });
@@ -242,9 +224,7 @@ export const createCubismWebGlModel = async (
       gl: context.gl,
       modelUrl: context.descriptor.modelSource,
       signal: context.signal,
-      ...(context.descriptor.defaultMotionName
-        ? { defaultMotionName: context.descriptor.defaultMotionName }
-        : {}),
+      ...(context.descriptor.defaultMotionName ? { defaultMotionName: context.descriptor.defaultMotionName } : {}),
       maskBufferSize: context.descriptor.maskBufferSize ?? 1024,
       anisotropy: context.descriptor.anisotropy ?? 1,
       physics: context.descriptor.physicsEnabled !== false,
@@ -450,9 +430,7 @@ class CanvasCubismRenderPool {
           this.preparing = false;
         }
       });
-    this.preparationQueue = prepare
-      .catch(() => undefined)
-      .then(() => undefined);
+    this.preparationQueue = prepare.catch(() => undefined).then(() => undefined);
     return prepare.finally(() => {
       this.pendingPreparations = Math.max(0, this.pendingPreparations - 1);
       this.teardownIfIdle();
@@ -583,12 +561,7 @@ class CanvasCubismStoryModel implements StoryCharacterModel {
   }
 
   /** Restore an authored motion after host transport seek/retry. */
-  playMotionAt(
-    name: string,
-    positionSeconds: number,
-    fadeInSeconds?: number,
-    options?: { loop?: boolean },
-  ): boolean {
+  playMotionAt(name: string, positionSeconds: number, fadeInSeconds?: number, options?: { loop?: boolean }): boolean {
     this.selectedMotionName = name.trim();
     return this.model.playMotionAt(name, positionSeconds, fadeInSeconds, options);
   }
@@ -663,7 +636,10 @@ class CanvasCubismStoryModel implements StoryCharacterModel {
     if (this.element.height !== height) this.element.height = height;
     const bounds: CubismDrawableBounds =
       this.model.drawableBounds(true) ?? this.model.drawableBounds(false) ?? this.model.canvasBounds();
-    const fill = Math.min(this.element.width / Math.max(0.001, bounds.width), this.element.height / Math.max(0.001, bounds.height));
+    const fill = Math.min(
+      this.element.width / Math.max(0.001, bounds.width),
+      this.element.height / Math.max(0.001, bounds.height),
+    );
     const scaleX = (2 * fill) / this.element.width;
     const scaleY = (2 * fill) / this.element.height;
     const centerX = bounds.x + bounds.width / 2;
@@ -672,12 +648,7 @@ class CanvasCubismStoryModel implements StoryCharacterModel {
   }
 
   private draw(present = true, duringPreparation = false): void {
-    if (
-      this.disposed ||
-      this.gl.isContextLost() ||
-      (!duringPreparation && !this.pool.canDrawSynchronously)
-    )
-      return;
+    if (this.disposed || this.gl.isContextLost() || (!duringPreparation && !this.pool.canDrawSynchronously)) return;
     this.pool.drawingCanvas(this.gl, this.element.width, this.element.height);
     this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
     this.gl.viewport(0, 0, this.element.width, this.element.height);
@@ -754,9 +725,7 @@ export const createCubismWebRuntimeAdapter = (
     },
     getMouthParameterProfile(context) {
       const model = context.model as {
-        parameterRange?: (
-          id: string,
-        ) => { readonly minimum: number; readonly maximum: number } | null;
+        parameterRange?: (id: string) => { readonly minimum: number; readonly maximum: number } | null;
       };
       const ids =
         context.descriptor.version === 2

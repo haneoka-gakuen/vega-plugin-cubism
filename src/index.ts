@@ -64,13 +64,10 @@ export interface CubismModelDescriptor {
    * Source-neutral fallback calibration. Source adapters may populate it from
    * importer metadata; the Cubism runtime never embeds game-specific profiles.
    */
-  readonly fallbackMotionSyncAudioScales?: Readonly<
-    Partial<Record<CubismVowel, number>>
-  >;
+  readonly fallbackMotionSyncAudioScales?: Readonly<Partial<Record<CubismVowel, number>>>;
 }
 
-export interface CubismRendererCharacterRequest
-  extends StoryCharacterRendererModelContext<string, object> {
+export interface CubismRendererCharacterRequest extends StoryCharacterRendererModelContext<string, object> {
   /**
    * Callers may pass a previously inspected descriptor, but the provider
    * always derives and validates its own descriptor from `entry`.
@@ -78,8 +75,7 @@ export interface CubismRendererCharacterRequest
   readonly descriptor?: unknown;
 }
 
-export interface CubismRendererCharacterContext
-  extends StoryCharacterRendererModelContext<string, object> {
+export interface CubismRendererCharacterContext extends StoryCharacterRendererModelContext<string, object> {
   readonly renderer: string;
   readonly descriptor: CubismModelDescriptor;
 }
@@ -93,10 +89,7 @@ export type CubismRendererCharacterModel = StoryCharacterRendererModel;
  */
 export interface CubismRuntimeAdapter {
   readonly id: string;
-  prepare?(
-    version: CubismRuntimeVersion,
-    signal: AbortSignal,
-  ): void | Promise<void>;
+  prepare?(version: CubismRuntimeVersion, signal: AbortSignal): void | Promise<void>;
   create(
     context: StoryCharacterModelContext & {
       readonly descriptor: CubismModelDescriptor;
@@ -119,9 +112,7 @@ export interface CubismRuntimeAdapter {
    * plugin. Returning `null` intentionally disables parameter mapping; a
    * custom `applyLipSync` hook can still consume the portable viseme frame.
    */
-  getMouthParameterProfile?(
-    context: CubismLipSyncModelContext,
-  ): CubismMouthParameterProfile | null;
+  getMouthParameterProfile?(context: CubismLipSyncModelContext): CubismMouthParameterProfile | null;
   /**
    * Applies one smoothed frame at the runtime's correct late-update phase.
    * This hook is synchronous because it is called from a render frame.
@@ -210,11 +201,8 @@ export interface CubismLipSyncOptions extends CubismVisemeOptions {
    * Creates a model-scoped analyzer facade. The returned provider is disposed
    * with the model. Omit it when the host pushes frames directly.
    */
-  readonly createAudioProvider?: (
-    context: CubismLipSyncModelContext,
-  ) => CubismAudioAnalysisProvider | null;
-  readonly parameterProfile?:
-    CubismMouthParameterProfile | CubismMouthParameterProfileResolver | null;
+  readonly createAudioProvider?: (context: CubismLipSyncModelContext) => CubismAudioAnalysisProvider | null;
+  readonly parameterProfile?: CubismMouthParameterProfile | CubismMouthParameterProfileResolver | null;
   /**
    * When a provider is present, sample it from a renderer model's conventional
    * `update(deltaSeconds, ...)` method. Hosts with a custom frame loop can turn
@@ -241,18 +229,11 @@ export interface CubismLipSyncApplyContext extends CubismLipSyncModelContext {
  * `setParameter` matches the common Cubism 2 and Cubism 3+ model boundary.
  */
 export interface CubismLipSyncModelHooks {
-  getCubismMouthParameterProfile?(
-    context: CubismLipSyncModelContext,
-  ): CubismMouthParameterProfile | null;
+  getCubismMouthParameterProfile?(context: CubismLipSyncModelContext): CubismMouthParameterProfile | null;
   applyCubismLipSync?(context: CubismLipSyncApplyContext): void;
-  applyCubismParameters?(
-    parameters: readonly CubismParameterValue[],
-    context: CubismLipSyncApplyContext,
-  ): void;
+  applyCubismParameters?(parameters: readonly CubismParameterValue[], context: CubismLipSyncApplyContext): void;
   setParameter?(id: string, value: number, weight?: number): void;
-  parameterRange?(
-    id: string,
-  ): { readonly minimum: number; readonly maximum: number } | null;
+  parameterRange?(id: string): { readonly minimum: number; readonly maximum: number } | null;
 }
 
 export interface CubismLipSyncController {
@@ -260,59 +241,31 @@ export interface CubismLipSyncController {
   readonly hasAudioProvider: boolean;
   readonly currentFrame: CubismVisemeFrame;
   update(deltaSeconds?: number): CubismVisemeFrame | null;
-  inputAudioFeatures(
-    features: CubismAudioFeatures,
-    deltaSeconds?: number,
-  ): CubismVisemeFrame | null;
-  inputViseme(
-    frame: CubismVisemeFrame,
-    deltaSeconds?: number,
-  ): CubismVisemeFrame | null;
+  inputAudioFeatures(features: CubismAudioFeatures, deltaSeconds?: number): CubismVisemeFrame | null;
+  inputViseme(frame: CubismVisemeFrame, deltaSeconds?: number): CubismVisemeFrame | null;
   reset(): CubismVisemeFrame;
   dispose(): void;
 }
 
-export const CUBISM_LIP_SYNC = Symbol.for(
-  "@haneoka/vega-plugin-cubism/lip-sync",
-);
+export const CUBISM_LIP_SYNC = Symbol.for("@haneoka/vega-plugin-cubism/lip-sync");
 
 export interface CubismLipSyncModel {
   readonly cubismLipSync: CubismLipSyncController;
   readonly [CUBISM_LIP_SYNC]: CubismLipSyncController;
 }
 
-export type CubismStoryCharacterModel = StoryCharacterModel &
-  CubismLipSyncModel;
+export type CubismStoryCharacterModel = StoryCharacterModel & CubismLipSyncModel;
 
-export interface CubismCharacterProvider
-  extends StoryCharacterProvider<
-    string,
-    object,
-    CubismRendererCharacterModel
-  > {
-  create(
-    context: StoryCharacterModelContext,
-  ): Promise<CubismStoryCharacterModel>;
+export interface CubismCharacterProvider extends StoryCharacterProvider<string, object, CubismRendererCharacterModel> {
+  create(context: StoryCharacterModelContext): Promise<CubismStoryCharacterModel>;
   createForRenderer(
     context: CubismRendererCharacterRequest,
   ): CubismRendererCharacterModel | Promise<CubismRendererCharacterModel>;
 }
 
-const DEFAULT_FORMATS = Object.freeze([
-  "cubism2",
-  "cubism3",
-  "cubism4",
-  "cubism5",
-  "live2d",
-]);
+const DEFAULT_FORMATS = Object.freeze(["cubism2", "cubism3", "cubism4", "cubism5", "live2d"]);
 
-export const CUBISM_VOWEL_ORDER = Object.freeze([
-  "A",
-  "I",
-  "U",
-  "E",
-  "O",
-] as const);
+export const CUBISM_VOWEL_ORDER = Object.freeze(["A", "I", "U", "E", "O"] as const);
 const VOWELS = CUBISM_VOWEL_ORDER;
 const MOUTH_OPEN: Readonly<Record<CubismVowel, number>> = Object.freeze({
   A: 1,
@@ -339,10 +292,7 @@ export const CUBISM_VOWEL_SHAPES: Readonly<
         mouthForm: MOUTH_FORM[vowel],
       }),
     ]),
-  ) as Record<
-    CubismVowel,
-    { readonly mouthOpen: number; readonly mouthForm: number }
-  >,
+  ) as Record<CubismVowel, { readonly mouthOpen: number; readonly mouthForm: number }>,
 );
 
 const finite = (value: unknown, fallback = 0): number => {
@@ -357,16 +307,11 @@ const object = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 
 const firstString = (...values: unknown[]): string =>
-  values
-    .map((value) => (typeof value === "string" ? value.trim() : ""))
-    .find(Boolean) ?? "";
+  values.map((value) => (typeof value === "string" ? value.trim() : "")).find(Boolean) ?? "";
 
 const firstFinite = (...values: unknown[]): number | undefined => {
   for (const value of values) {
-    if (
-      typeof value !== "number" &&
-      !(typeof value === "string" && value.trim())
-    ) {
+    if (typeof value !== "number" && !(typeof value === "string" && value.trim())) {
       continue;
     }
     const number = Number(value);
@@ -383,14 +328,9 @@ const firstBoolean = (...values: unknown[]): boolean | undefined => {
 };
 
 const plainObject = (value: unknown): Record<string, unknown> =>
-  value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
+  value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 
-const field = (
-  source: Readonly<Record<string, unknown>>,
-  ...names: readonly string[]
-): unknown => {
+const field = (source: Readonly<Record<string, unknown>>, ...names: readonly string[]): unknown => {
   for (const name of names) {
     if (Object.hasOwn(source, name)) return source[name];
   }
@@ -398,9 +338,7 @@ const field = (
 };
 
 const strings = (value: unknown): readonly string[] =>
-  Array.isArray(value)
-    ? value.map((entry) => firstString(entry)).filter(Boolean)
-    : [];
+  Array.isArray(value) ? value.map((entry) => firstString(entry)).filter(Boolean) : [];
 
 /** Resolve a standard manifest sidecar without assuming a browser origin. */
 const resolveManifestResource = (manifestSource: string, resource: unknown): string => {
@@ -408,16 +346,11 @@ const resolveManifestResource = (manifestSource: string, resource: unknown): str
   if (!value) return "";
   if (/^[A-Za-z][A-Za-z0-9+.-]*:/u.test(value)) return value;
 
-  const opaque = /^([A-Za-z][A-Za-z0-9+.-]*:)(?!\/\/)([^?#]*)(?:[?#].*)?$/u.exec(
-    manifestSource,
-  );
+  const opaque = /^([A-Za-z][A-Za-z0-9+.-]*:)(?!\/\/)([^?#]*)(?:[?#].*)?$/u.exec(manifestSource);
   if (opaque) {
     if (value.startsWith("//")) return `${opaque[1]}${value}`;
     const origin = "https://vega-cubism.invalid";
-    const base = new URL(
-      `/${opaque[2]?.replace(/^\/+/, "") ?? ""}`,
-      origin,
-    );
+    const base = new URL(`/${opaque[2]?.replace(/^\/+/, "") ?? ""}`, origin);
     const resolved = new URL(value, base);
     if (resolved.origin !== origin) return resolved.toString();
     return `${opaque[1]}${resolved.pathname.replace(/^\/+/, "")}${resolved.search}${resolved.hash}`;
@@ -442,8 +375,7 @@ const cubismFileStem = (source: string): string => {
   return file.replace(/\.(?:motion3|exp3)\.json$/iu, "");
 };
 
-type CubismResourceResolver =
-  StoryCharacterResourceEnumerationContext["resources"];
+type CubismResourceResolver = StoryCharacterResourceEnumerationContext["resources"];
 
 interface SharedCubismManifest {
   readonly controller: AbortController;
@@ -559,18 +491,11 @@ interface CubismManifestProjection {
 }
 
 const selectedAnimationNames = (
-  context: Pick<
-    StoryCharacterResourceEnumerationContext,
-    "entry" | "animationUsage"
-  >,
+  context: Pick<StoryCharacterResourceEnumerationContext, "entry" | "animationUsage">,
   fieldName: "motions" | "expressions",
 ): ReadonlySet<string> => {
   if (!context.animationUsage) return new Set();
-  return new Set(
-    fieldName === "motions"
-      ? context.animationUsage.motions
-      : context.animationUsage.expressions,
-  );
+  return new Set(fieldName === "motions" ? context.animationUsage.motions : context.animationUsage.expressions);
 };
 
 const projectModel3Manifest = (
@@ -611,10 +536,7 @@ const projectModel3Manifest = (
     add(field(references, "Physics", "physics"), "Cubism physics");
   }
   add(field(references, "Pose", "pose"), "Cubism pose");
-  add(
-    field(references, "UserData", "userData", "userdata"),
-    "Cubism user data",
-  );
+  add(field(references, "UserData", "userData", "userdata"), "Cubism user data");
 
   const motions = plainObject(field(references, "Motions", "motions"));
   for (const entries of Object.values(motions)) {
@@ -696,10 +618,7 @@ const projectCubism2Manifest = (
     add(field(manifest, "physics", "Physics"), "Cubism physics");
   }
   add(field(manifest, "pose", "Pose"), "Cubism pose");
-  add(
-    field(manifest, "userdata", "userData", "UserData"),
-    "Cubism user data",
-  );
+  add(field(manifest, "userdata", "userData", "UserData"), "Cubism user data");
 
   const motions = plainObject(field(manifest, "motions", "Motions"));
   for (const [group, entries] of Object.entries(motions)) {
@@ -754,58 +673,28 @@ const loadCubismAnimationCatalog = async (
   resources: CubismResourceResolver,
   signal: AbortSignal,
 ): Promise<CubismAnimationCatalog> => {
-  const directMotions = new Set(
-    (descriptor.motions ?? []).map(({ name }) => name).filter(Boolean),
-  );
-  const directExpressions = new Set(
-    (descriptor.expressions ?? []).map(({ name }) => name).filter(Boolean),
-  );
+  const directMotions = new Set((descriptor.motions ?? []).map(({ name }) => name).filter(Boolean));
+  const directExpressions = new Set((descriptor.expressions ?? []).map(({ name }) => name).filter(Boolean));
   if (descriptor.sourceKind !== "manifest" || !descriptor.manifestSource) {
     return { motions: directMotions, expressions: directExpressions };
   }
-  const manifest = await loadCubismManifest(
-    resources,
-    descriptor.manifestSource,
-    signal,
-  );
+  const manifest = await loadCubismManifest(resources, descriptor.manifestSource, signal);
   throwIfAborted(signal);
   const emptySelection = new Set<string>();
   const projection =
     descriptor.version === 2
-      ? projectCubism2Manifest(
-          descriptor.manifestSource,
-          manifest,
-          emptySelection,
-          emptySelection,
-          false,
-        )
-      : projectModel3Manifest(
-          descriptor.manifestSource,
-          manifest,
-          emptySelection,
-          emptySelection,
-          false,
-        );
+      ? projectCubism2Manifest(descriptor.manifestSource, manifest, emptySelection, emptySelection, false)
+      : projectModel3Manifest(descriptor.manifestSource, manifest, emptySelection, emptySelection, false);
   return {
     motions: new Set([...directMotions, ...projection.motionNames]),
-    expressions: new Set([
-      ...directExpressions,
-      ...projection.expressionNames,
-    ]),
+    expressions: new Set([...directExpressions, ...projection.expressionNames]),
   };
 };
 
-const standardCubismFormat = (
-  entry: StoryCharacterModelContext["entry"],
-): string => {
+const standardCubismFormat = (entry: StoryCharacterModelContext["entry"]): string => {
   const source = object(entry);
   const runtime = object(source.runtime);
-  const model = firstString(
-    runtime.model,
-    runtime.modelUrl,
-    source.model,
-    source.modelUrl,
-  );
+  const model = firstString(runtime.model, runtime.modelUrl, source.model, source.modelUrl);
   const moc = firstString(runtime.moc, source.moc);
   if (/model3\.json(?:[?#].*)?$/iu.test(model)) return "cubism3";
   if (/model\.json(?:[?#].*)?$/iu.test(model)) return "cubism2";
@@ -814,19 +703,12 @@ const standardCubismFormat = (
     : Array.isArray(source.textures)
       ? source.textures
       : [];
-  if (
-    /\.moc(?:[?#].*)?$/iu.test(moc) &&
-    textures.some((value) => firstString(value))
-  ) {
+  if (/\.moc(?:[?#].*)?$/iu.test(moc) && textures.some((value) => firstString(value))) {
     return "cubism2";
   }
   const explicit = firstString(runtime.format, source.format).toLowerCase();
   if (explicit === "cubism2") return explicit;
-  if (
-    explicit === "cubism3" ||
-    explicit === "cubism4" ||
-    explicit === "cubism5"
-  ) {
+  if (explicit === "cubism3" || explicit === "cubism4" || explicit === "cubism5") {
     return explicit;
   }
   if (explicit === "live2d") {
@@ -881,8 +763,7 @@ const attachCubismAnimationCatalog = (
   const target = model as object;
   const nativeHasExpression = Reflect.get(target, "hasExpression", target);
   if (typeof nativeHasExpression === "function") return model;
-  const hasExpression = (name: string): boolean =>
-    Boolean(name && catalog.expressions.has(name));
+  const hasExpression = (name: string): boolean => Boolean(name && catalog.expressions.has(name));
   return new Proxy(target, {
     get(targetModel, property) {
       if (property === "hasExpression") return hasExpression;
@@ -898,11 +779,7 @@ const cubismAnimationCatalog = (
   const source = object(entry);
   const runtime = object(source.runtime);
   const direct = Array.isArray(source[field]) ? source[field] : [];
-  return direct.length
-    ? direct
-    : Array.isArray(runtime[field])
-      ? runtime[field]
-      : [];
+  return direct.length ? direct : Array.isArray(runtime[field]) ? runtime[field] : [];
 };
 
 const cubismAnimationSource = (value: unknown): string => {
@@ -938,31 +815,21 @@ const cubismAnimationDescriptors = (
   );
 };
 
-export const describeCubismModel = (
-  entry: StoryCharacterModelContext["entry"],
-): CubismModelDescriptor | null => {
+export const describeCubismModel = (entry: StoryCharacterModelContext["entry"]): CubismModelDescriptor | null => {
   const source = object(entry);
   const runtime = object(source.runtime);
   const profile = object(source.profile);
   const format = standardCubismFormat(entry);
   if (!format) return null;
   const version: CubismRuntimeVersion = format === "cubism2" ? 2 : 3;
-  const model = firstString(
-    runtime.model,
-    runtime.modelUrl,
-    source.model,
-    source.modelUrl,
-  );
+  const model = firstString(runtime.model, runtime.modelUrl, source.model, source.modelUrl);
   const moc = firstString(runtime.moc, source.moc);
   // A populated MOC field is an explicit low-level override. Preserve that
   // long-standing both-fields behavior even when `model` also names a
   // standard manifest. With only `model`, an ordinary `.moc` suffix remains a
   // compatibility fallback; an opaque explicit Cubism 2 model is a manifest.
   const sourceKind: CubismModelSourceKind =
-    version === 2 &&
-    (Boolean(moc) || /\.moc(?:[?#].*)?$/iu.test(model))
-      ? "moc"
-      : "manifest";
+    version === 2 && (Boolean(moc) || /\.moc(?:[?#].*)?$/iu.test(model)) ? "moc" : "manifest";
   const modelSource = sourceKind === "moc" ? moc || model : model;
   const manifestSource = /(?:model3|model)\.json(?:[?#].*)?$/iu.test(model)
     ? model
@@ -977,55 +844,23 @@ export const describeCubismModel = (
       : [];
   const physicsSource = firstString(runtime.physics, source.physics);
   const poseSource = firstString(runtime.pose, source.pose);
-  const userDataSource = firstString(
-    runtime.userData,
-    runtime.userdata,
-    source.userData,
-    source.userdata,
-  );
+  const userDataSource = firstString(runtime.userData, runtime.userdata, source.userData, source.userdata);
   const motions = cubismAnimationDescriptors(entry, "motions");
   const expressions = cubismAnimationDescriptors(entry, "expressions");
-  const pixelsPerUnit = firstFinite(
-    runtime.pixelsPerUnit,
-    source.pixelsPerUnit,
-  );
-  const canvasWorldHeight = firstFinite(
-    runtime.canvasWorldHeight,
-    source.canvasWorldHeight,
-  );
-  const defaultMotionName = firstString(
-    profile.defaultMotionName,
-    runtime.defaultMotionName,
-    source.defaultMotionName,
-  );
+  const pixelsPerUnit = firstFinite(runtime.pixelsPerUnit, source.pixelsPerUnit);
+  const canvasWorldHeight = firstFinite(runtime.canvasWorldHeight, source.canvasWorldHeight);
+  const defaultMotionName = firstString(profile.defaultMotionName, runtime.defaultMotionName, source.defaultMotionName);
   const defaultExpressionName = firstString(
     profile.defaultExpressionName,
     runtime.defaultExpressionName,
     source.defaultExpressionName,
   );
-  const maskBufferSize = firstFinite(
-    runtime.maskBufferSize,
-    source.maskBufferSize,
-  );
-  const maskBufferMaximum = firstFinite(
-    runtime.maskBufferMaximum,
-    source.maskBufferMaximum,
-  );
-  const maskResolutionScale = firstFinite(
-    runtime.maskResolutionScale,
-    source.maskResolutionScale,
-  );
+  const maskBufferSize = firstFinite(runtime.maskBufferSize, source.maskBufferSize);
+  const maskBufferMaximum = firstFinite(runtime.maskBufferMaximum, source.maskBufferMaximum);
+  const maskResolutionScale = firstFinite(runtime.maskResolutionScale, source.maskResolutionScale);
   const anisotropy = firstFinite(runtime.anisotropy, source.anisotropy);
-  const physicsEnabled = firstBoolean(
-    runtime.physicsEnabled,
-    source.physicsEnabled,
-  );
-  const breathEnabled = firstBoolean(
-    runtime.breathEnabled,
-    runtime.breath,
-    source.breathEnabled,
-    source.breath,
-  );
+  const physicsEnabled = firstBoolean(runtime.physicsEnabled, source.physicsEnabled);
+  const breathEnabled = firstBoolean(runtime.breathEnabled, runtime.breath, source.breathEnabled, source.breath);
   if (!modelSource) return null;
   return {
     version,
@@ -1037,9 +872,7 @@ export const describeCubismModel = (
       ? {
           // MOC texture indices are positional. Preserve empty or malformed
           // slots so later atlases never shift onto a different index.
-          textures: textureValues.map((value) =>
-            typeof value === "string" ? value.trim() : "",
-          ),
+          textures: textureValues.map((value) => (typeof value === "string" ? value.trim() : "")),
         }
       : {}),
     ...(physicsSource ? { physicsSource } : {}),
@@ -1060,12 +893,10 @@ export const describeCubismModel = (
     ...((runtime.motionSync ?? source.motionSync) !== undefined
       ? { motionSync: runtime.motionSync ?? source.motionSync }
       : {}),
-    ...((runtime.fallbackMotionSyncAudioScales ??
-      source.fallbackMotionSyncAudioScales) !== undefined
+    ...((runtime.fallbackMotionSyncAudioScales ?? source.fallbackMotionSyncAudioScales) !== undefined
       ? {
           fallbackMotionSyncAudioScales: object(
-            runtime.fallbackMotionSyncAudioScales ??
-              source.fallbackMotionSyncAudioScales,
+            runtime.fallbackMotionSyncAudioScales ?? source.fallbackMotionSyncAudioScales,
           ) as Readonly<Partial<Record<CubismVowel, number>>>,
         }
       : {}),
@@ -1074,10 +905,7 @@ export const describeCubismModel = (
 
 /** Enumerate standard Cubism fields and the dependencies declared by a model manifest. */
 export const enumerateCubismResources = async (
-  context: Pick<
-    StoryCharacterResourceEnumerationContext,
-    "entry" | "animationUsage" | "resources" | "signal"
-  >,
+  context: Pick<StoryCharacterResourceEnumerationContext, "entry" | "animationUsage" | "resources" | "signal">,
 ): Promise<readonly StoryCharacterResource[]> => {
   const descriptor = describeCubismModel(context.entry);
   if (!descriptor) return [];
@@ -1102,18 +930,10 @@ export const enumerateCubismResources = async (
 
   const selectedMotions = selectedAnimationNames(context, "motions");
   const selectedExpressions = selectedAnimationNames(context, "expressions");
-  const enumerateAnimations = (
-    field: "motions" | "expressions",
-    selected: ReadonlySet<string>,
-  ) => {
+  const enumerateAnimations = (field: "motions" | "expressions", selected: ReadonlySet<string>) => {
     for (const animation of cubismAnimationDescriptors(context.entry, field)) {
       if (!selected.has(animation.name)) continue;
-      add(
-        animation.source,
-        field === "motions" ? "Cubism motion" : "Cubism expression",
-        undefined,
-        "animation",
-      );
+      add(animation.source, field === "motions" ? "Cubism motion" : "Cubism expression", undefined, "animation");
     }
   };
   if (descriptor.sourceKind === "moc") {
@@ -1134,11 +954,7 @@ export const enumerateCubismResources = async (
     // Manifest construction owns MOC/textures/sidecars. Direct aliases beside
     // it are not fetched unless the runtime itself adopts override semantics.
     add(descriptor.manifestSource, "Cubism manifest");
-    const manifest = await loadCubismManifest(
-      context.resources,
-      descriptor.manifestSource,
-      context.signal,
-    );
+    const manifest = await loadCubismManifest(context.resources, descriptor.manifestSource, context.signal);
     throwIfAborted(context.signal);
     const projection =
       descriptor.version === 2
@@ -1170,36 +986,26 @@ export const enumerateCubismResources = async (
   );
 };
 
-export const createCubismCharacterProvider = (
-  options: CreateCubismPluginOptions,
-): CubismCharacterProvider => {
+export const createCubismCharacterProvider = (options: CreateCubismPluginOptions): CubismCharacterProvider => {
   if (!options.adapter?.id?.trim()) {
     throw new TypeError("A named Cubism runtime adapter is required");
   }
   const formats = new Set(
-    (options.formats ?? DEFAULT_FORMATS)
-      .map((format) => format.trim().toLowerCase())
-      .filter(Boolean),
+    (options.formats ?? DEFAULT_FORMATS).map((format) => format.trim().toLowerCase()).filter(Boolean),
   );
   if (formats.size === 0) {
     throw new TypeError("At least one Cubism format must be enabled");
   }
   const cubism2Enabled = formats.has("cubism2") || formats.has("live2d");
   const model3Enabled =
-    formats.has("live2d") ||
-    formats.has("cubism3") ||
-    formats.has("cubism4") ||
-    formats.has("cubism5");
+    formats.has("live2d") || formats.has("cubism3") || formats.has("cubism4") || formats.has("cubism5");
   const contributionId = options.contributionId?.trim() || "vega.cubism";
   return {
     id: contributionId,
     supports(entry) {
       const format = standardCubismFormat(entry);
       if (!format) return false;
-      return (
-        (format === "cubism2" ? cubism2Enabled : model3Enabled) &&
-        describeCubismModel(entry) !== null
-      );
+      return (format === "cubism2" ? cubism2Enabled : model3Enabled) && describeCubismModel(entry) !== null;
     },
     async prepareDescriptors({ descriptors, signal }) {
       throwIfAborted(signal);
@@ -1209,11 +1015,7 @@ export const createCubismCharacterProvider = (
         const descriptor = describeCubismModel(entry);
         if (descriptor) versions.add(descriptor.version);
       }
-      await Promise.all(
-        [...versions].map((version) =>
-          options.adapter.prepare!(version, signal),
-        ),
-      );
+      await Promise.all([...versions].map((version) => options.adapter.prepare!(version, signal)));
       throwIfAborted(signal);
     },
     enumerateResources(context) {
@@ -1221,8 +1023,7 @@ export const createCubismCharacterProvider = (
     },
     async create(context) {
       const descriptor = describeCubismModel(context.entry);
-      if (!descriptor)
-        throw new TypeError("Cubism model descriptor is incomplete");
+      if (!descriptor) throw new TypeError("Cubism model descriptor is incomplete");
       throwIfAborted(context.signal);
       await options.adapter.prepare?.(descriptor.version, context.signal);
       throwIfAborted(context.signal);
@@ -1249,16 +1050,13 @@ export const createCubismCharacterProvider = (
     },
     async createForRenderer(context) {
       const descriptor = describeCubismModel(context.entry);
-      if (!descriptor)
-        throw new TypeError("Cubism model descriptor is incomplete");
+      if (!descriptor) throw new TypeError("Cubism model descriptor is incomplete");
       const adapterContext: CubismRendererCharacterContext = {
         ...context,
         descriptor,
       };
       if (!options.adapter.createForRenderer) {
-        throw new Error(
-          `Cubism adapter ${options.adapter.id} does not support renderer ${context.renderer}`,
-        );
+        throw new Error(`Cubism adapter ${options.adapter.id} does not support renderer ${context.renderer}`);
       }
       throwIfAborted(context.signal);
       await options.adapter.prepare?.(descriptor.version, context.signal);
@@ -1266,11 +1064,7 @@ export const createCubismCharacterProvider = (
       // Resource enumeration normally populated this manifest cache during
       // story warmup, so the catalogue lookup is byte-cache-only here. It
       // never fetches motion/expression payloads that the story does not use.
-      const animationCatalog = await loadCubismAnimationCatalog(
-        descriptor,
-        context.resources,
-        context.signal,
-      );
+      const animationCatalog = await loadCubismAnimationCatalog(descriptor, context.resources, context.signal);
       throwIfAborted(context.signal);
       const model = await options.adapter.createForRenderer(adapterContext);
       if (context.signal.aborted) {
@@ -1289,20 +1083,8 @@ export const createCubismCharacterProvider = (
         rendererContext: context.rendererContext,
       };
       try {
-        const lipSyncedModel = attachCubismLipSync(
-          model,
-          lipSyncContext,
-          options,
-          [
-          "dispose",
-          "destroy",
-          "release",
-          ],
-        );
-        return attachCubismAnimationCatalog(
-          lipSyncedModel,
-          animationCatalog,
-        );
+        const lipSyncedModel = attachCubismLipSync(model, lipSyncContext, options, ["dispose", "destroy", "release"]);
+        return attachCubismAnimationCatalog(lipSyncedModel, animationCatalog);
       } catch (error) {
         await disposeRendererModel(options.adapter, model, adapterContext);
         throw error;
@@ -1319,8 +1101,7 @@ export const createCubismPlugin = (options: CreateCubismPluginOptions) => {
       name: "Vega Cubism",
       version: "0.1.0",
       apiVersion: 1,
-      description:
-        "Cubism 2/3/4/5 model discovery, lifecycle routing and AIUEO visemes",
+      description: "Cubism 2/3/4/5 model discovery, lifecycle routing and AIUEO visemes",
       capabilities: ["character"],
     },
     setup(context) {
@@ -1340,9 +1121,7 @@ export const estimateCubismViseme = (
 ): CubismVisemeFrame => {
   const sensitivity = Math.max(0, finite(options.sensitivity, 1));
   const threshold =
-    options.silenceThreshold === undefined
-      ? 0.018
-      : clamp(finite(options.silenceThreshold, 0.018), 0, 0.5);
+    options.silenceThreshold === undefined ? 0.018 : clamp(finite(options.silenceThreshold, 0.018), 0, 0.5);
   const energy = clamp(features.rms * sensitivity);
   if (energy <= threshold) {
     return {
@@ -1364,19 +1143,12 @@ export const estimateCubismViseme = (
     E: 0.52 * mid + 0.3 * high + 0.18 * centroid,
     O: 0.58 * low + 0.28 * mid + 0.14 * (1 - centroid),
   };
-  const total =
-    VOWELS.reduce((sum, vowel) => sum + Math.max(0, raw[vowel]), 0) || 1;
+  const total = VOWELS.reduce((sum, vowel) => sum + Math.max(0, raw[vowel]), 0) || 1;
   const vowels = Object.fromEntries(
     VOWELS.map((vowel) => [vowel, (Math.max(0, raw[vowel]) / total) * energy]),
   ) as Record<CubismVowel, number>;
-  const mouthOpen = VOWELS.reduce(
-    (sum, vowel) => sum + vowels[vowel] * MOUTH_OPEN[vowel],
-    0,
-  );
-  const weighted = VOWELS.reduce(
-    (sum, vowel) => sum + vowels[vowel] * MOUTH_FORM[vowel],
-    0,
-  );
+  const mouthOpen = VOWELS.reduce((sum, vowel) => sum + vowels[vowel] * MOUTH_OPEN[vowel], 0);
+  const weighted = VOWELS.reduce((sum, vowel) => sum + vowels[vowel] * MOUTH_FORM[vowel], 0);
   return {
     silence: 1 - energy,
     vowels,
@@ -1393,30 +1165,19 @@ export class CubismVisemeSmoother {
     return this.current;
   }
 
-  update(
-    next: CubismVisemeFrame,
-    deltaSeconds: number,
-    options: CubismVisemeOptions = {},
-  ): CubismVisemeFrame {
+  update(next: CubismVisemeFrame, deltaSeconds: number, options: CubismVisemeOptions = {}): CubismVisemeFrame {
     const delta = Math.max(0, finite(deltaSeconds));
     const opening = next.mouthOpen > this.current.mouthOpen;
     const time = Math.max(
       0.001,
-      finite(
-        opening ? options.attackSeconds : options.releaseSeconds,
-        opening ? 0.045 : 0.11,
-      ),
+      finite(opening ? options.attackSeconds : options.releaseSeconds, opening ? 0.045 : 0.11),
     );
     const amount = 1 - Math.exp(-delta / time);
-    const lerp = (left: number, right: number) =>
-      left + (right - left) * amount;
+    const lerp = (left: number, right: number) => left + (right - left) * amount;
     this.current = {
       silence: clamp(lerp(this.current.silence, next.silence)),
       vowels: Object.fromEntries(
-        VOWELS.map((vowel) => [
-          vowel,
-          clamp(lerp(this.current.vowels[vowel], next.vowels[vowel])),
-        ]),
+        VOWELS.map((vowel) => [vowel, clamp(lerp(this.current.vowels[vowel], next.vowels[vowel]))]),
       ) as Record<CubismVowel, number>,
       mouthOpen: clamp(lerp(this.current.mouthOpen, next.mouthOpen)),
       mouthForm: clamp(lerp(this.current.mouthForm, next.mouthForm), -1, 1),
@@ -1429,31 +1190,17 @@ export const mapCubismVisemeToParameters = (
   frame: CubismVisemeFrame,
   profile: CubismMouthParameterProfile,
 ): readonly CubismParameterValue[] => {
-  const valueInRange = (
-    range: CubismParameterRange,
-    normalized: number,
-    bipolar = false,
-  ): CubismParameterValue => {
-    if (
-      !range.id?.trim() ||
-      !Number.isFinite(range.minimum) ||
-      !Number.isFinite(range.maximum)
-    ) {
-      throw new TypeError(
-        "Cubism parameter ranges require an id and finite minimum/maximum values",
-      );
+  const valueInRange = (range: CubismParameterRange, normalized: number, bipolar = false): CubismParameterValue => {
+    if (!range.id?.trim() || !Number.isFinite(range.minimum) || !Number.isFinite(range.maximum)) {
+      throw new TypeError("Cubism parameter ranges require an id and finite minimum/maximum values");
     }
-    const ratio = bipolar
-      ? (clamp(normalized, -1, 1) + 1) / 2
-      : clamp(normalized);
+    const ratio = bipolar ? (clamp(normalized, -1, 1) + 1) / 2 : clamp(normalized);
     return {
       id: range.id,
       value: range.minimum + ratio * (range.maximum - range.minimum),
     };
   };
-  const values: CubismParameterValue[] = [
-    valueInRange(profile.mouthOpen, frame.mouthOpen),
-  ];
+  const values: CubismParameterValue[] = [valueInRange(profile.mouthOpen, frame.mouthOpen)];
   if (profile.mouthForm) {
     values.push(valueInRange(profile.mouthForm, frame.mouthForm, true));
   }
@@ -1464,9 +1211,7 @@ export const mapCubismVisemeToParameters = (
   return values;
 };
 
-export const createDefaultCubismMouthParameterProfile = (
-  version: CubismRuntimeVersion,
-): CubismMouthParameterProfile =>
+export const createDefaultCubismMouthParameterProfile = (version: CubismRuntimeVersion): CubismMouthParameterProfile =>
   version === 2
     ? {
         mouthOpen: {
@@ -1493,9 +1238,7 @@ export const createDefaultCubismMouthParameterProfile = (
         },
       };
 
-export const cubismVisemeFromVega = (
-  frame: VegaVisemeFrame,
-): CubismVisemeFrame => {
+export const cubismVisemeFromVega = (frame: VegaVisemeFrame): CubismVisemeFrame => {
   const vowels: Readonly<Record<CubismVowel, number>> = {
     A: clamp(frame.weights.a),
     I: clamp(frame.weights.i),
@@ -1506,9 +1249,7 @@ export const cubismVisemeFromVega = (
   return {
     silence: clamp(frame.weights.silence),
     vowels,
-    mouthOpen: clamp(
-      VOWELS.reduce((sum, vowel) => sum + vowels[vowel] * MOUTH_OPEN[vowel], 0),
-    ),
+    mouthOpen: clamp(VOWELS.reduce((sum, vowel) => sum + vowels[vowel] * MOUTH_OPEN[vowel], 0)),
     mouthForm: clamp(
       VOWELS.reduce((sum, vowel) => sum + vowels[vowel] * MOUTH_FORM[vowel], 0),
       -1,
@@ -1526,9 +1267,7 @@ export const createCubismVoiceAnalyzerProvider = (
   options: { readonly disposeAnalyzer?: boolean } = {},
 ): CubismAudioAnalysisProvider => {
   if (!analyzer || typeof analyzer.sampleSpectrum !== "function") {
-    throw new TypeError(
-      "A Vega voice analyzer with sampleSpectrum() is required",
-    );
+    throw new TypeError("A Vega voice analyzer with sampleSpectrum() is required");
   }
   return {
     sample() {
@@ -1582,18 +1321,12 @@ class RuntimeCubismLipSyncController implements CubismLipSyncController {
     return this.consume(input, deltaSeconds, "audio-provider");
   }
 
-  inputAudioFeatures(
-    features: CubismAudioFeatures,
-    deltaSeconds = 1 / 60,
-  ): CubismVisemeFrame | null {
+  inputAudioFeatures(features: CubismAudioFeatures, deltaSeconds = 1 / 60): CubismVisemeFrame | null {
     if (this.disposedValue) return null;
     return this.consume(features, deltaSeconds, "audio-features");
   }
 
-  inputViseme(
-    frame: CubismVisemeFrame,
-    deltaSeconds = 1 / 60,
-  ): CubismVisemeFrame | null {
+  inputViseme(frame: CubismVisemeFrame, deltaSeconds = 1 / 60): CubismVisemeFrame | null {
     if (this.disposedValue) return null;
     return this.consume(frame, deltaSeconds, "viseme");
   }
@@ -1631,9 +1364,7 @@ const sanitizeCubismViseme = (frame: CubismVisemeFrame): CubismVisemeFrame => {
   const vowels = object(frame.vowels);
   return {
     silence: clamp(frame.silence),
-    vowels: Object.fromEntries(
-      VOWELS.map((vowel) => [vowel, clamp(vowels[vowel])]),
-    ) as Record<CubismVowel, number>,
+    vowels: Object.fromEntries(VOWELS.map((vowel) => [vowel, clamp(vowels[vowel])])) as Record<CubismVowel, number>,
     mouthOpen: clamp(frame.mouthOpen),
     mouthForm: clamp(frame.mouthForm, -1, 1),
   };
@@ -1647,33 +1378,19 @@ const validParameterRange = (
     ? { id, minimum: value.minimum, maximum: value.maximum }
     : null;
 
-const defaultProfileForModel = (
-  context: CubismLipSyncModelContext,
-): CubismMouthParameterProfile | null => {
-  const profile = createDefaultCubismMouthParameterProfile(
-    context.descriptor.version,
-  );
+const defaultProfileForModel = (context: CubismLipSyncModelContext): CubismMouthParameterProfile | null => {
+  const profile = createDefaultCubismMouthParameterProfile(context.descriptor.version);
   const target = context.model as CubismLipSyncModelHooks;
   if (typeof target.parameterRange !== "function") return profile;
-  const discoveredMouthOpen = validParameterRange(
-    profile.mouthOpen.id,
-    target.parameterRange(profile.mouthOpen.id),
-  );
+  const discoveredMouthOpen = validParameterRange(profile.mouthOpen.id, target.parameterRange(profile.mouthOpen.id));
   // Cubism 2 SDKs commonly cannot expose authored ranges through the model
   // wrapper. Later generations can, so a missing ID must not be synthesized.
-  const mouthOpen =
-    discoveredMouthOpen ??
-    (context.descriptor.version === 2 ? profile.mouthOpen : null);
+  const mouthOpen = discoveredMouthOpen ?? (context.descriptor.version === 2 ? profile.mouthOpen : null);
   if (!mouthOpen) return null;
   const discoveredMouthForm = profile.mouthForm
-    ? validParameterRange(
-        profile.mouthForm.id,
-        target.parameterRange(profile.mouthForm.id),
-      )
+    ? validParameterRange(profile.mouthForm.id, target.parameterRange(profile.mouthForm.id))
     : null;
-  const mouthForm =
-    discoveredMouthForm ??
-    (context.descriptor.version === 2 ? profile.mouthForm : undefined);
+  const mouthForm = discoveredMouthForm ?? (context.descriptor.version === 2 ? profile.mouthForm : undefined);
   return {
     mouthOpen,
     ...(mouthForm ? { mouthForm } : {}),
@@ -1709,14 +1426,8 @@ const createLipSyncApply =
     options: CreateCubismPluginOptions,
     profile: CubismMouthParameterProfile | null,
   ) =>
-  (
-    frame: CubismVisemeFrame,
-    deltaSeconds: number,
-    origin: CubismLipSyncApplyContext["origin"],
-  ): void => {
-    const parameters = profile
-      ? mapCubismVisemeToParameters(frame, profile)
-      : [];
+  (frame: CubismVisemeFrame, deltaSeconds: number, origin: CubismLipSyncApplyContext["origin"]): void => {
+    const parameters = profile ? mapCubismVisemeToParameters(frame, profile) : [];
     const applyContext: CubismLipSyncApplyContext = {
       ...context,
       deltaSeconds,
@@ -1744,9 +1455,7 @@ const createLipSyncApply =
       }
       return;
     }
-    throw new TypeError(
-      `Cubism adapter ${options.adapter.id} must apply lip sync through an adapter or model hook`,
-    );
+    throw new TypeError(`Cubism adapter ${options.adapter.id} must apply lip sync through an adapter or model hook`);
   };
 
 const isPromiseLike = (value: unknown): value is PromiseLike<unknown> =>
@@ -1773,10 +1482,7 @@ const lifecycleCall = (
     result = Reflect.apply(method, receiver, args);
   } catch (error) {
     if (controllerError !== undefined) {
-      throw new AggregateError(
-        [controllerError, error],
-        "Cubism lip-sync and model disposal both failed",
-      );
+      throw new AggregateError([controllerError, error], "Cubism lip-sync and model disposal both failed");
     }
     throw error;
   }
@@ -1787,10 +1493,7 @@ const lifecycleCall = (
         throw controllerError;
       },
       (error: unknown) => {
-        throw new AggregateError(
-          [controllerError, error],
-          "Cubism lip-sync and model disposal both failed",
-        );
+        throw new AggregateError([controllerError, error], "Cubism lip-sync and model disposal both failed");
       },
     );
   }
@@ -1839,8 +1542,7 @@ function attachCubismLipSync(
   let lifecycleResult: unknown;
   let lifecycleFailed = false;
   let lifecycleError: unknown;
-  const autoUpdate =
-    controller.hasAudioProvider && options.lipSync?.autoUpdate !== false;
+  const autoUpdate = controller.hasAudioProvider && options.lipSync?.autoUpdate !== false;
   const updatePhase = options.lipSync?.updatePhase ?? "before";
   const proxy = new Proxy(target, {
     get(targetModel, property) {
@@ -1860,12 +1562,7 @@ function attachCubismLipSync(
           }
           lifecycleInvoked = true;
           try {
-            lifecycleResult = lifecycleCall(
-              controller,
-              value,
-              targetModel,
-              args,
-            );
+            lifecycleResult = lifecycleCall(controller, value, targetModel, args);
             return lifecycleResult;
           } catch (error) {
             lifecycleFailed = true;
@@ -1904,9 +1601,7 @@ function attachCubismLipSync(
   return proxy;
 }
 
-export const getCubismLipSyncController = (
-  model: unknown,
-): CubismLipSyncController | null => {
+export const getCubismLipSyncController = (model: unknown): CubismLipSyncController | null => {
   if (!model || typeof model !== "object") return null;
   return cubismLipSyncControllers.get(model) ?? null;
 };

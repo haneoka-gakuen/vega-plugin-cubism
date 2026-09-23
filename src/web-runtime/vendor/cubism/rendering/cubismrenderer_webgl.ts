@@ -327,12 +327,8 @@ export class CubismClippingManager_WebGL extends CubismClippingManager<CubismCli
         for (let i = 0; i < clipDrawCount; i++) {
           const clipDrawIndex: number = clipContext._clippingIdList[i];
 
-          // 頂点情報が更新されておらず、信頼性がない場合は描画をパスする
-          if (
-            !model.getDrawableDynamicFlagVertexPositionsDidChange(clipDrawIndex)
-          ) {
-            continue;
-          }
+          // Every mesh contributes to the rebuilt mask atlas, including
+          // unchanged meshes and models evaluated while off screen.
 
           renderer.setIsCulling(
             model.getDrawableCulling(clipDrawIndex) != false
@@ -730,7 +726,7 @@ export class CubismRenderer_WebGL extends CubismRenderer {
       uv: [],
       index: [],
       vertexByteLength: [],
-      vertexGeneration: []
+      vertexRevision: []
     };
     this._drawGeneration = 0;
     this._unityAdvLighting = DEFAULT_UNITY_CUBISM_LIGHTING;
@@ -864,15 +860,6 @@ export class CubismRenderer_WebGL extends CubismRenderer {
 
           for (let index = 0; index < clipDrawCount; index++) {
             const clipDrawIndex: number = clipContext._clippingIdList[index];
-
-            // 頂点情報が更新されておらず、信頼性がない場合は描画をパスする
-            if (
-              !this._model.getDrawableDynamicFlagVertexPositionsDidChange(
-                clipDrawIndex
-              )
-            ) {
-              continue;
-            }
 
             this.setIsCulling(
               this._model.getDrawableCulling(clipDrawIndex) != false
@@ -1132,7 +1119,7 @@ export class CubismRenderer_WebGL extends CubismRenderer {
     buffers.uv.length = 0;
     buffers.index.length = 0;
     buffers.vertexByteLength.length = 0;
-    buffers.vertexGeneration.length = 0;
+    buffers.vertexRevision.length = 0;
   }
 
   _textures: csmMap<number, WebGLTexture>; // モデルが参照するテクスチャとレンダラでバインドしているテクスチャとのマップ
@@ -1149,7 +1136,7 @@ export class CubismRenderer_WebGL extends CubismRenderer {
     uv: WebGLBuffer[];
     index: WebGLBuffer[];
     vertexByteLength: number[];
-    vertexGeneration: number[];
+    vertexRevision: number[];
   }; // 頂点バッファデータ
   _drawGeneration: number;
   _extension: any; // 拡張機能

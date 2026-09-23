@@ -6,8 +6,6 @@
     "exactOptionalPropertyTypes": false,
     "noEmit": true
   },
-  "include": [
-    "src/web-runtime/**/*.ts"
-  ],
+  "include": ["src/web-runtime/**/*.ts"],
   "exclude": []
 }

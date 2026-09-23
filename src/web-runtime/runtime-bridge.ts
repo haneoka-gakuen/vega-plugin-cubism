@@ -9,21 +9,12 @@ export {
   type CubismParameterValue,
 } from "./rendering/cubism/AdvCubismModel";
 export type { AdvCubismMotionPositionOptions } from "./rendering/cubism/AdvCubismMotionPosition";
-export {
-  AdvHarmonicMotionController,
-  type AdvHarmonicMotionData,
-} from "./rendering/cubism/AdvHarmonicMotion";
+export { AdvHarmonicMotionController, type AdvHarmonicMotionData } from "./rendering/cubism/AdvHarmonicMotion";
 export {
   DEFAULT_UNITY_CUBISM_LIGHTING,
   type UnityCubismLightingState,
 } from "./rendering/cubism/UnityCubismAdvLighting";
 export { UnityTargetFrameClock } from "./rendering/three/UnityTargetFrameClock";
-export {
-  acquireCubismShaderContext,
-  releaseCubismShaderContext,
-} from "./vendor/cubism/rendering/cubismshader_webgl";
-export {
-  cubismPlaybackSteps,
-  CubismViewerPlaybackState,
-} from "./viewer/CubismPlaybackClock";
+export { acquireCubismShaderContext, releaseCubismShaderContext } from "./vendor/cubism/rendering/cubismshader_webgl";
+export { cubismPlaybackSteps, CubismViewerPlaybackState } from "./viewer/CubismPlaybackClock";
 export { Matrix4 } from "./rendering/math/Matrix4";

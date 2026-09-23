@@ -58,16 +58,10 @@ function globalState(): CubismGlobalState {
   return created;
 }
 
-function waitForSharedRuntime<T>(
-  pending: Promise<T>,
-  signal: AbortSignal | undefined,
-): Promise<T> {
+function waitForSharedRuntime<T>(pending: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
   if (!signal) return pending;
   if (signal.aborted) {
-    return Promise.reject(
-      signal.reason ??
-        new DOMException("Cubism runtime initialization was aborted", "AbortError"),
-    );
+    return Promise.reject(signal.reason ?? new DOMException("Cubism runtime initialization was aborted", "AbortError"));
   }
   return new Promise<T>((resolve, reject) => {
     let settled = false;
@@ -79,13 +73,7 @@ function waitForSharedRuntime<T>(
     };
     const abort = (): void =>
       finish(() =>
-        reject(
-          signal.reason ??
-            new DOMException(
-              "Cubism runtime initialization was aborted",
-              "AbortError",
-            ),
-        ),
+        reject(signal.reason ?? new DOMException("Cubism runtime initialization was aborted", "AbortError")),
       );
     signal.addEventListener("abort", abort, { once: true });
     pending.then(
@@ -157,8 +145,7 @@ export async function ensureCubismFramework(signal?: AbortSignal): Promise<void>
 
       const option = new Option();
       option.loggingLevel = LogLevel.LogLevel_Warning;
-      option.logFunction = (message: string) =>
-        console.warn(`[Cubism] ${message}`);
+      option.logFunction = (message: string) => console.warn(`[Cubism] ${message}`);
       CubismFramework.startUp(option);
       CubismFramework.initialize(64 * 1024 * 1024);
       if (!isLocalFrameworkReady()) {

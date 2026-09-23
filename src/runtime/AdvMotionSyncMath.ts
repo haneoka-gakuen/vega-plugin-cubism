@@ -1,8 +1,5 @@
 /* Copyright 2026 Haneoka Gakuen contributors. MPL-2.0 licensed. */
-import type {
-  CubismMotionSyncRuntime,
-  CubismMotionSyncSetting,
-} from "./types";
+import type { CubismMotionSyncRuntime, CubismMotionSyncSetting } from "./types";
 
 function finite(value: unknown, fallback = 0): number {
   const result = Number(value);

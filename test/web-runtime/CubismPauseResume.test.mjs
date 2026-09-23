@@ -65,10 +65,13 @@ test("viewer load and pause wiring remain part of the public runtime contract", 
   assert.match(viewerSource, /if \(this\.targetFrameRate === next\) return;/);
   assert.match(viewerSource, /this\.targetFrameRate = next;[\s\S]*this\.frameClock\.reset\(\);/);
   assert.match(viewerSource, /options\?: CubismModelViewerMotionPositionOptions,/);
-  assert.match(viewerSource, /\{ loop: options\?\.loop \?\? this\.loopMotionName === name \},/);
+  assert.match(viewerSource, /\{\s*loop: options\?\.loop \?\? this\.loopMotionName === name,?\s*\}/);
   assert.match(modelSource, /this\.pausedMotionRequest\.retain\(request\);/);
   assert.match(modelSource, /const motion = this\.pausedMotionRequest\.take\(\);/);
   assert.match(modelSource, /A lazy request may have started before Pause and completed during it\./);
   assert.match(modelSource, /readonly positionSeconds\?: number;/);
-  assert.match(modelSource, /positionAdvCubismMotionQueueEntry\([\s\S]*request\.positionSeconds,[\s\S]*request\.positionOptions,/);
+  assert.match(
+    modelSource,
+    /positionAdvCubismMotionQueueEntry\([\s\S]*request\.positionSeconds,[\s\S]*request\.positionOptions,/,
+  );
 });

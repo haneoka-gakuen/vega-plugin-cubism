@@ -121,10 +121,7 @@ export class CubismModelViewer {
 
   constructor(options: CubismModelViewerOptions) {
     this.canvas = options.canvas;
-    this.targetFrameRate = Math.max(
-      1,
-      finite(options.targetFrameRate, DEFAULT_TARGET_FRAME_RATE),
-    );
+    this.targetFrameRate = Math.max(1, finite(options.targetFrameRate, DEFAULT_TARGET_FRAME_RATE));
     this.orthographicCapture = options.orthographicCapture;
     this.automaticFrameControl = options.frameControl !== "manual";
     this.onFrame = options.onFrame;
@@ -145,28 +142,14 @@ export class CubismModelViewer {
     this.gl = context;
     this.gl.clearColor(0, 0, 0, 0);
     this.acquireShaderContext();
-    this.canvas.addEventListener(
-      "webglcontextlost",
-      this.handleContextLost,
-      false,
-    );
-    this.canvas.addEventListener(
-      "webglcontextrestored",
-      this.handleContextRestored,
-      false,
-    );
+    this.canvas.addEventListener("webglcontextlost", this.handleContextLost, false);
+    this.canvas.addEventListener("webglcontextrestored", this.handleContextRestored, false);
     this.previousFrameTime = performance.now();
-    if (this.automaticFrameControl)
-      this.animationFrame = requestAnimationFrame(this.animate);
+    if (this.automaticFrameControl) this.animationFrame = requestAnimationFrame(this.animate);
   }
 
   get ready(): boolean {
-    return (
-      Boolean(this.model) &&
-      !this.contextLost &&
-      !this.renderFaulted &&
-      !this.destroyed
-    );
+    return Boolean(this.model) && !this.contextLost && !this.renderFaulted && !this.destroyed;
   }
 
   get isMotionPlaying(): boolean {
@@ -187,8 +170,7 @@ export class CubismModelViewer {
   }
 
   async load(options: CubismModelViewerLoadOptions): Promise<void> {
-    if (this.destroyed)
-      throw new Error("A destroyed Cubism model viewer cannot load a model");
+    if (this.destroyed) throw new Error("A destroyed Cubism model viewer cannot load a model");
     const generation = ++this.loadGeneration;
     this.loadOptions = options;
     this.renderFaulted = false;
@@ -207,11 +189,7 @@ export class CubismModelViewer {
       breath: false,
       lighting: options.lighting ?? DEFAULT_UNITY_CUBISM_LIGHTING,
     });
-    if (
-      this.destroyed ||
-      generation !== this.loadGeneration ||
-      this.contextLost
-    ) {
+    if (this.destroyed || generation !== this.loadGeneration || this.contextLost) {
       model.release();
       return;
     }
@@ -222,15 +200,11 @@ export class CubismModelViewer {
     model.setPaused(this.paused);
     this.harmonicMotion.setPaused(this.paused);
     if (options.defaultMotionName) model.playMotion(options.defaultMotionName);
-    if (options.defaultExpressionName)
-      model.playExpression(options.defaultExpressionName);
+    if (options.defaultExpressionName) model.playExpression(options.defaultExpressionName);
     model.primeInitialFrame({
       blends: this.breathEnabled ? this.harmonicMotion.current(model) : [],
     });
-    this.currentModelBounds =
-      model.drawableBounds(true) ??
-      model.drawableBounds(false) ??
-      model.canvasBounds();
+    this.currentModelBounds = model.drawableBounds(true) ?? model.drawableBounds(false) ?? model.canvasBounds();
     this.updateProjection();
     this.render();
   }
@@ -325,47 +299,26 @@ export class CubismModelViewer {
    * position. The cached load-time drawable bounds keep the normalization
    * stable while motions deform individual drawables.
    */
-  setLookAtClientPosition(
-    clientX: number,
-    clientY: number,
-    anchor: CubismModelViewerFocusAnchor | null = null,
-  ): void {
+  setLookAtClientPosition(clientX: number, clientY: number, anchor: CubismModelViewerFocusAnchor | null = null): void {
     const bounds = this.modelBounds;
     const rect = this.canvas.getBoundingClientRect();
-    if (
-      !bounds ||
-      !Number.isFinite(clientX) ||
-      !Number.isFinite(clientY) ||
-      rect.width <= 0 ||
-      rect.height <= 0
-    ) {
+    if (!bounds || !Number.isFinite(clientX) || !Number.isFinite(clientY) || rect.width <= 0 || rect.height <= 0) {
       this.setLookPosition(null);
       return;
     }
 
     const modelX = finite(anchor?.x, bounds.x + bounds.width * 0.5);
-    const modelY = finite(
-      anchor?.y,
-      bounds.y + bounds.height * FALLBACK_FOCUS_ANCHOR_HEIGHT_RATIO,
-    );
+    const modelY = finite(anchor?.y, bounds.y + bounds.height * FALLBACK_FOCUS_ANCHOR_HEIGHT_RATIO);
     const elements = this.mvp.elements;
-    const projectedX =
-      elements[0] * modelX + elements[4] * modelY + elements[12];
-    const projectedY =
-      elements[1] * modelX + elements[5] * modelY + elements[13];
+    const projectedX = elements[0] * modelX + elements[4] * modelY + elements[12];
+    const projectedY = elements[1] * modelX + elements[5] * modelY + elements[13];
     const anchorClientX = rect.left + ((projectedX + 1) * rect.width) / 2;
     const anchorClientY = rect.top + ((1 - projectedY) * rect.height) / 2;
 
     // Normalize in the displayed model's own horizontal/vertical scale, then
     // clamp radially to preserve the cursor direction at and beyond full turn.
-    const horizontalRange = Math.max(
-      1,
-      (Math.abs(elements[0]) * bounds.width * rect.width) / 4,
-    );
-    const verticalRange = Math.max(
-      1,
-      (Math.abs(elements[5]) * bounds.height * rect.height) / 4,
-    );
+    const horizontalRange = Math.max(1, (Math.abs(elements[0]) * bounds.width * rect.width) / 4);
+    const verticalRange = Math.max(1, (Math.abs(elements[5]) * bounds.height * rect.height) / 4);
     let targetX = (clientX - anchorClientX) / horizontalRange;
     let targetY = (anchorClientY - clientY) / verticalRange;
     const magnitude = Math.hypot(targetX, targetY);
@@ -391,12 +344,11 @@ export class CubismModelViewer {
     fadeInSeconds?: number,
     options?: CubismModelViewerMotionPositionOptions,
   ): boolean {
-    return this.model?.playMotionAt(
-      name,
-      positionSeconds,
-      fadeInSeconds,
-      { loop: options?.loop ?? this.loopMotionName === name },
-    ) ?? false;
+    return (
+      this.model?.playMotionAt(name, positionSeconds, fadeInSeconds, {
+        loop: options?.loop ?? this.loopMotionName === name,
+      }) ?? false
+    );
   }
 
   prepareMotion(name: string): Promise<boolean> {
@@ -446,8 +398,7 @@ export class CubismModelViewer {
 
   /** Draw the current model state after a host-controlled batch update. */
   captureFrame(notify = true): boolean {
-    if (!this.model || this.contextLost || this.renderFaulted || this.destroyed)
-      return false;
+    if (!this.model || this.contextLost || this.renderFaulted || this.destroyed) return false;
     try {
       this.render();
       if (notify) this.onFrame?.();
@@ -469,16 +420,8 @@ export class CubismModelViewer {
     this.loadGeneration += 1;
     if (this.animationFrame) cancelAnimationFrame(this.animationFrame);
     this.animationFrame = 0;
-    this.canvas.removeEventListener(
-      "webglcontextlost",
-      this.handleContextLost,
-      false,
-    );
-    this.canvas.removeEventListener(
-      "webglcontextrestored",
-      this.handleContextRestored,
-      false,
-    );
+    this.canvas.removeEventListener("webglcontextlost", this.handleContextLost, false);
+    this.canvas.removeEventListener("webglcontextrestored", this.handleContextRestored, false);
     this.releaseModel();
     this.releaseShaderContext();
     // The viewer owns this context. Relinquish it eagerly so repeated editor
@@ -498,9 +441,7 @@ export class CubismModelViewer {
     const model = this.model;
     if (!model) return;
     for (const step of cubismPlaybackSteps(deltaSeconds, this.playback.rate)) {
-      const blends = this.breathEnabled
-        ? this.harmonicMotion.advance(step, model)
-        : [];
+      const blends = this.breathEnabled ? this.harmonicMotion.advance(step, model) : [];
       model.update(step, {
         focusX: this.focusX,
         focusY: this.focusY,
@@ -544,8 +485,7 @@ export class CubismModelViewer {
     let accelerationX = maximumSpeed * (dx / distance) - this.focusVelocityX;
     let accelerationY = maximumSpeed * (dy / distance) - this.focusVelocityY;
     const acceleration = Math.sqrt(accelerationX ** 2 + accelerationY ** 2);
-    const maximumAcceleration =
-      maximumSpeed * FOCUS_ACCELERATION_TIME * milliseconds;
+    const maximumAcceleration = maximumSpeed * FOCUS_ACCELERATION_TIME * milliseconds;
     if (acceleration > maximumAcceleration) {
       accelerationX *= maximumAcceleration / acceleration;
       accelerationY *= maximumAcceleration / acceleration;
@@ -553,15 +493,9 @@ export class CubismModelViewer {
 
     this.focusVelocityX += accelerationX;
     this.focusVelocityY += accelerationY;
-    const speed = Math.sqrt(
-      this.focusVelocityX ** 2 + this.focusVelocityY ** 2,
-    );
+    const speed = Math.sqrt(this.focusVelocityX ** 2 + this.focusVelocityY ** 2);
     const brakingSpeed =
-      0.5 *
-      (Math.sqrt(
-        maximumAcceleration ** 2 + 8 * maximumAcceleration * distance,
-      ) -
-        maximumAcceleration);
+      0.5 * (Math.sqrt(maximumAcceleration ** 2 + 8 * maximumAcceleration * distance) - maximumAcceleration);
     if (speed > brakingSpeed) {
       this.focusVelocityX *= brakingSpeed / speed;
       this.focusVelocityY *= brakingSpeed / speed;
@@ -573,11 +507,7 @@ export class CubismModelViewer {
 
   private updateProjection(): void {
     if (this.orthographicCapture) {
-      const capture = resolveCubismOrthographicCaptureMatrix(
-        this.width,
-        this.height,
-        this.orthographicCapture,
-      );
+      const capture = resolveCubismOrthographicCaptureMatrix(this.width, this.height, this.orthographicCapture);
       this.mvp.set(
         capture.scaleX,
         0,
@@ -600,9 +530,7 @@ export class CubismModelViewer {
     }
     const bounds = this.currentModelBounds;
     if (!bounds) return;
-    const fillScale =
-      Math.min(this.width / bounds.width, this.height / bounds.height) *
-      VISIBLE_MODEL_FILL;
+    const fillScale = Math.min(this.width / bounds.width, this.height / bounds.height) * VISIBLE_MODEL_FILL;
     const pixelScale = fillScale * this.modelScale;
     const scaleX = (2 * pixelScale) / this.width;
     const scaleY = (2 * pixelScale) / this.height;

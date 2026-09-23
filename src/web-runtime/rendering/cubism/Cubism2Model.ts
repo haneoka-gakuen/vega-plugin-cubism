@@ -1,7 +1,4 @@
-import {
-  Matrix4,
-  type Matrix4Like,
-} from "../math/Matrix4";
+import { Matrix4, type Matrix4Like } from "../math/Matrix4";
 import type { AdvCubismDrawState, CubismDrawableBounds, CubismParameterFrame } from "./AdvCubismModel";
 import type { AdvMotionSyncCoreStatus } from "./AdvMotionSyncCore";
 import type { StoryCharacterModel } from "../StoryCharacterModel";

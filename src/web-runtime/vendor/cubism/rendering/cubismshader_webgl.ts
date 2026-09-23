@@ -62,7 +62,7 @@ export class CubismShader_WebGL {
     this.releaseShaderProgram();
   }
 
-  /** Drawableごとの動的頂点VBOをbindし、同一モデル描画内では一度だけ更新する。 */
+  /** Upload each drawable once per evaluated model revision. */
   private bindDrawableVertices(
     renderer: CubismRenderer_WebGL,
     model: Readonly<CubismModel>,
@@ -72,16 +72,17 @@ export class CubismShader_WebGL {
     const buffers = renderer._bufferData;
     let buffer = buffers.vertex[index];
     const vertices: Float32Array = model.getDrawableVertices(index);
+    const revision = model.getGeometryRevision();
     if (buffer == null) {
       buffer = this.gl.createBuffer();
       buffers.vertex[index] = buffer;
       this.gl.bindBuffer(this.gl.ARRAY_BUFFER, buffer);
       this.gl.bufferData(this.gl.ARRAY_BUFFER, vertices, this.gl.DYNAMIC_DRAW);
       buffers.vertexByteLength[index] = vertices.byteLength;
-      buffers.vertexGeneration[index] = renderer._drawGeneration;
+      buffers.vertexRevision[index] = revision;
     } else {
       this.gl.bindBuffer(this.gl.ARRAY_BUFFER, buffer);
-      if (buffers.vertexGeneration[index] !== renderer._drawGeneration) {
+      if (buffers.vertexRevision[index] !== revision) {
         if (buffers.vertexByteLength[index] !== vertices.byteLength) {
           this.gl.bufferData(
             this.gl.ARRAY_BUFFER,
@@ -89,10 +90,10 @@ export class CubismShader_WebGL {
             this.gl.DYNAMIC_DRAW
           );
           buffers.vertexByteLength[index] = vertices.byteLength;
-        } else if (model.getDrawableDynamicFlagVertexPositionsDidChange(index)) {
+        } else {
           this.gl.bufferSubData(this.gl.ARRAY_BUFFER, 0, vertices);
         }
-        buffers.vertexGeneration[index] = renderer._drawGeneration;
+        buffers.vertexRevision[index] = revision;
       }
     }
     this.gl.enableVertexAttribArray(attributeLocation);

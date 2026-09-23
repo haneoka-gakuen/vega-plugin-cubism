@@ -46,15 +46,25 @@ function entryFor(motion) {
   return {
     _motion: motion,
     isStarted: () => started,
-    setIsStarted: (value) => { started = value; },
+    setIsStarted: (value) => {
+      started = value;
+    },
     getStartTime: () => start,
-    setStartTime: (value) => { start = value; },
+    setStartTime: (value) => {
+      start = value;
+    },
     getFadeInStartTime: () => fadeInStart,
-    setFadeInStartTime: (value) => { fadeInStart = value; },
+    setFadeInStartTime: (value) => {
+      fadeInStart = value;
+    },
     getEndTime: () => end,
-    setEndTime: (value) => { end = value; },
+    setEndTime: (value) => {
+      end = value;
+    },
     getLastCheckEventSeconds: () => lastEventCheck,
-    setLastCheckEventSeconds: (value) => { lastEventCheck = value; },
+    setLastCheckEventSeconds: (value) => {
+      lastEventCheck = value;
+    },
   };
 }
 
@@ -62,7 +72,9 @@ test("absolute motion positioning rebases start, fade, end and event clocks", ()
   const motion = new TestMotion(8);
   const entry = entryFor(motion);
   let began = 0;
-  motion.setBeganMotionHandler(() => { began += 1; });
+  motion.setBeganMotionHandler(() => {
+    began += 1;
+  });
 
   const position = positionAdvCubismMotionQueueEntry(entry, motion, 12, 3.25);
 

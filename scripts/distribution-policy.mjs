@@ -1,12 +1,11 @@
 const normalizePath = (path) =>
-  String(path).replaceAll("\\", "/").replace(/^\.\/+/u, "");
+  String(path)
+    .replaceAll("\\", "/")
+    .replace(/^\.\/+/u, "");
 
 const permittedWebRuntimeSource = (path) => {
   const normalized = normalizePath(path);
-  return (
-    normalized === "CUBISM-LICENSE.md" ||
-    /^(?:src|dist)\/web-runtime\/.+\.(?:d\.ts|js|mjs|ts)$/u.test(normalized)
-  );
+  return normalized === "CUBISM-LICENSE.md" || /^(?:src|dist)\/web-runtime\/.+\.(?:d\.ts|js|mjs|ts)$/u.test(normalized);
 };
 
 const restrictedDirectory =
@@ -15,14 +14,11 @@ const restrictedDirectory =
 const cubismAssetName =
   /(?:^|[._-])(?:cdi3|exp(?:3)?|model(?:3)?|motion(?:3)?|motionsync3|physics(?:3)?|pose(?:3)?|userdata3)\.json$/iu;
 
-const restrictedExtension =
-  /\.(?:bin|dat|dll|dylib|exp|gz|moc3?|mtn|node|so|tar|tgz|wasm|zip)$/iu;
+const restrictedExtension = /\.(?:bin|dat|dll|dylib|exp|gz|moc3?|mtn|node|so|tar|tgz|wasm|zip)$/iu;
 
-const spineAssetName =
-  /\.(?:atlas(?:\.(?:json|txt))?|skel|skeleton\.json|spine(?:\.json)?|spineproj)$/iu;
+const spineAssetName = /\.(?:atlas(?:\.(?:json|txt))?|skel|skeleton\.json|spine(?:\.json)?|spineproj)$/iu;
 
-const mediaExtension =
-  /\.(?:avif|bmp|gif|jpe?g|m4a|mp3|mp4|ogg|png|svg|wav|webm|webp)$/iu;
+const mediaExtension = /\.(?:avif|bmp|gif|jpe?g|m4a|mp3|mp4|ogg|png|svg|wav|webm|webp)$/iu;
 
 const sdkFileName =
   /^(?:live2d(?:\.min)?|live2dcubism(?:core|framework|motionsynccore)(?:\.min)?)\.(?:js|mjs|cjs|wasm)$/iu;
@@ -30,11 +26,9 @@ const sdkFileName =
 const live2dCopyright =
   /copyright\s*(?:(?:\(\s*c\s*\)|©)\s*)?(?:(?:19|20)\d{2}(?:\s*[-–—,]\s*(?:19|20)\d{2})?\s*)?live2d\s*,?\s*inc\.?/iu;
 
-const live2dLicense =
-  /live2d\s+(?:open\s+software|proprietary\s+software)\s+license\s+agreement/iu;
+const live2dLicense = /live2d\s+(?:open\s+software|proprietary\s+software)\s+license\s+agreement/iu;
 
-const cubismSdkProduct =
-  /(?:live2d\s+)?cubism\s+(?:motion\s*sync\s+)?sdk\s+for\s+(?:native|unity|web)/iu;
+const cubismSdkProduct = /(?:live2d\s+)?cubism\s+(?:motion\s*sync\s+)?sdk\s+for\s+(?:native|unity|web)/iu;
 
 const bundledRuntimeMarker =
   /\blive2dcubism(?:core|framework|motionsynccore)\b|\blive2d\s*\.\s*(?:geterror|init)\s*\(|\bcsm(?:getversion|initializemodelinplace|revivemocinplace)\b/iu;
@@ -64,15 +58,7 @@ export const restrictedCubismPathReason = (path) => {
 
 export const restrictedCubismContentReason = (bytes, path = "") => {
   const body = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
-  if (
-    body.some(
-      (byte) =>
-        byte === 0 ||
-        byte === 0x7f ||
-        byte < 0x09 ||
-        (byte > 0x0d && byte < 0x20),
-    )
-  ) {
+  if (body.some((byte) => byte === 0 || byte === 0x7f || byte < 0x09 || (byte > 0x0d && byte < 0x20))) {
     return "binary payload";
   }
 

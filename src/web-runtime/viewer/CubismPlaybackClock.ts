@@ -3,9 +3,7 @@ const MAXIMUM_MOTION_STEP_SECONDS = 1 / 30;
 
 export function normalizeCubismPlaybackRate(value: unknown): number {
   const rate = Number(value);
-  return Number.isFinite(rate) && rate > 0
-    ? Math.max(MINIMUM_PLAYBACK_RATE, rate)
-    : 1;
+  return Number.isFinite(rate) && rate > 0 ? Math.max(MINIMUM_PLAYBACK_RATE, rate) : 1;
 }
 
 export interface CubismMotionSpeedTarget {
@@ -38,20 +36,11 @@ export class CubismViewerPlaybackState {
  * jumps by more than one 30 Hz tick. This keeps 2x playback on the same
  * continuous update path as 0.5x and 1x, including after a delayed RAF.
  */
-export function cubismPlaybackSteps(
-  elapsedSeconds: number,
-  playbackRate: number,
-): readonly number[] {
-  const elapsed = Math.max(
-    0,
-    Number.isFinite(elapsedSeconds) ? elapsedSeconds : 0,
-  );
+export function cubismPlaybackSteps(elapsedSeconds: number, playbackRate: number): readonly number[] {
+  const elapsed = Math.max(0, Number.isFinite(elapsedSeconds) ? elapsedSeconds : 0);
   if (elapsed === 0) return [0];
   const rate = normalizeCubismPlaybackRate(playbackRate);
-  const count = Math.max(
-    1,
-    Math.ceil((elapsed * rate) / MAXIMUM_MOTION_STEP_SECONDS),
-  );
+  const count = Math.max(1, Math.ceil((elapsed * rate) / MAXIMUM_MOTION_STEP_SECONDS));
   const step = elapsed / count;
   return Array.from({ length: count }, () => step);
 }
