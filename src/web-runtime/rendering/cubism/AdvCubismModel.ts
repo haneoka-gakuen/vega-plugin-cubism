@@ -238,6 +238,8 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
   private elapsedSeconds = 0;
   private paused = false;
   private motionClockFrozen = false;
+  private animationTimeFrozen = false;
+  private defaultMotionRestartSuppressed = false;
   private motionSpeed = 1;
   private readonly eyeBlinkBaseValues: number[] = [];
   private eyeBlinkEnabled = true;
@@ -604,13 +606,22 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
   }
 
   /**
-   * Freeze only the authored motion/expression clocks and procedural animation
-   * (auto-blink, idle restart) without the pause-time request slots. Used by
-   * the standalone viewer's pose mode: physics keeps evaluating so posed
-   * angles settle naturally while everything else holds still.
+   * Freeze authored motion/expression clocks and procedural animation without
+   * touching the pause-time request slots. The standalone viewer combines this
+   * with setAnimationTimeFrozen() when it needs a complete temporal snapshot.
    */
   setMotionClockFrozen(frozen: boolean): void {
     this.motionClockFrozen = Boolean(frozen);
+  }
+
+  /** Freeze every time-based effect for the standalone viewer's pose mode. */
+  setAnimationTimeFrozen(frozen: boolean): void {
+    this.animationTimeFrozen = Boolean(frozen);
+  }
+
+  /** Suppress only the controller's automatic default-idle restart. */
+  setDefaultMotionRestartSuppressed(suppressed: boolean): void {
+    this.defaultMotionRestartSuppressed = Boolean(suppressed);
   }
 
   /** Live2DCharacter.SetMotionSpeed: motion and auto-blink, not expression. */
@@ -1008,18 +1019,22 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     if (!this.isInitialized()) return;
     this.retryRequestedResources();
     const delta = Math.max(0, Math.min(0.1, Number(deltaSeconds) || 0));
-    this.elapsedSeconds += delta;
+    const effectDelta = this.animationTimeFrozen ? 0 : delta;
+    this.elapsedSeconds += effectDelta;
     this._model.loadParameters();
     // loadParameters restored the pre-ADV saved frame, including removal of
     // the additive values retained from the preceding rendered frame.
-    // Pause owns only the authored motion/expression clocks. Core evaluation,
-    // blink, physics, lip sync and late ADV inputs must remain live; otherwise
-    // one stale Pause latch turns the whole model into a static final-frame
-    // image and is indistinguishable from intentional controller state.
-    const motionDelta = this.paused || this.motionClockFrozen ? 0 : delta * this.motionSpeed;
+    // Pause owns only the authored motion/expression clocks. Complete pose
+    // freeze is a separate opt-in flag so story/runtime pause semantics remain
+    // live for physics, blink, lip sync and late ADV inputs.
+    const motionDelta =
+      this.paused || this.motionClockFrozen || this.animationTimeFrozen ? 0 : delta * this.motionSpeed;
     const motionUpdated = this._motionManager.updateMotion(this._model, motionDelta);
     this._model.saveParameters();
-    this._expressionManager.updateMotion(this._model, this.paused || this.motionClockFrozen ? 0 : delta);
+    this._expressionManager.updateMotion(
+      this._model,
+      this.paused || this.motionClockFrozen || this.animationTimeFrozen ? 0 : delta,
+    );
     // PlayMotion disables AutoEyeBlinkInput for an ordinary authored motion,
     // while Idle immediately restores the controller's configured blink flag
     // after starting DefaultMotionName. The default clip is finite and gets
@@ -1028,8 +1043,11 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     const defaultIdleIsUpdating =
       motionUpdated && Boolean(this.defaultMotionName) && this.requestedMotion?.name === this.defaultMotionName;
     this.applyMultiplicativeEyeBlink(
-      delta,
-      this.eyeBlinkEnabled && !this.motionClockFrozen && (this.paused || !motionUpdated || defaultIdleIsUpdating),
+      effectDelta,
+      this.eyeBlinkEnabled &&
+        !this.motionClockFrozen &&
+        !this.animationTimeFrozen &&
+        (this.paused || !motionUpdated || defaultIdleIsUpdating),
     );
 
     // Cubism's interactive focus is additive: eyes lead, the head follows over
@@ -1053,7 +1071,7 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
       const motionSyncWeight = Number(frame.motionSyncWeight);
       this.applyMotionSync(
         frame.motionSyncPcm,
-        delta,
+        effectDelta,
         Math.max(0, Number.isFinite(motionSyncWeight) ? motionSyncWeight : 1),
       );
     } else {
@@ -1080,9 +1098,9 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
       }
     }
 
-    this._breath?.updateParameters(this._model, delta);
-    this._physics?.evaluate(this._model, delta);
-    this._pose?.updateParameters(this._model, delta);
+    this._breath?.updateParameters(this._model, effectDelta);
+    this._physics?.evaluate(this._model, effectDelta);
+    this._pose?.updateParameters(this._model, effectDelta);
 
     this.applyLateAdvOverrides(frame);
     this._model.update();
@@ -1098,6 +1116,8 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     if (
       !this.paused &&
       !this.motionClockFrozen &&
+      !this.animationTimeFrozen &&
+      !this.defaultMotionRestartSuppressed &&
       this.defaultMotionName &&
       this.motions.has(this.defaultMotionName) &&
       this.requestedMotion?.name === this.defaultMotionName &&

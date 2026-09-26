@@ -213,14 +213,21 @@ export const createCubismWebGlModel = async (
       resourceLoader,
     });
     if (!model) throw new Error(`Cubism 2 model could not be created for ${context.target}`);
-    model.registerCatalog([...resolved.motions], [...resolved.expressions]);
-    return ownRelease(model);
+    try {
+      throwIfAborted(context.signal);
+      model.registerCatalog([...resolved.motions], [...resolved.expressions]);
+      return ownRelease(model);
+    } catch (error) {
+      model.release();
+      throw error;
+    }
   }
 
   await ensureCubismFramework(context.signal);
   const releaseShader = acquireShaderLease(context.gl);
+  let model: AdvCubismModel | undefined;
   try {
-    const model = await AdvCubismModel.create({
+    model = await AdvCubismModel.create({
       gl: context.gl,
       modelUrl: context.descriptor.modelSource,
       signal: context.signal,
@@ -235,7 +242,11 @@ export const createCubismWebGlModel = async (
     throwIfAborted(context.signal);
     return ownRelease(model, releaseShader);
   } catch (error) {
-    releaseShader();
+    try {
+      model?.release();
+    } finally {
+      releaseShader();
+    }
     throw error;
   }
 };
@@ -494,8 +505,9 @@ class CanvasCubismStoryModel implements StoryCharacterModel {
     const canvas = options.createCanvas?.() ?? document.createElement("canvas");
     const display = createDisplayContext(canvas);
     const lease = pool.acquire();
+    let model: RuntimeModel | undefined;
     try {
-      const model = await createCubismWebGlModel({ ...context, gl: lease.gl });
+      model = await createCubismWebGlModel({ ...context, gl: lease.gl });
       return new CanvasCubismStoryModel(
         pool,
         lease.gl,
@@ -508,7 +520,11 @@ class CanvasCubismStoryModel implements StoryCharacterModel {
         1 / Math.max(1, options.targetFrameRate ?? 60),
       );
     } catch (error) {
-      lease.release();
+      try {
+        model?.release();
+      } finally {
+        lease.release();
+      }
       throw error;
     }
   }

@@ -14,8 +14,8 @@ const policies = {
   "@haneoka/vega-plugin-cubism": {
     repository: "git+https://github.com/haneoka-gakuen/vega-plugin-cubism.git",
     peerDependencies: ["@haneoka/vega"],
-    allowedImports: ["@haneoka/vega", "@haneoka/vega/plugin"],
-    runtimeDependencies: [],
+    allowedImports: ["@haneoka/vega", "@haneoka/vega/plugin", "fflate"],
+    runtimeDependencies: ["fflate"],
     forbiddenDependency: /(?:live2d|cubism|motionsync)/iu,
     externalRuntime: true,
     forbidMedia: true,

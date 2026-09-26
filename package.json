@@ -51,6 +51,11 @@
       "import": "./dist/web-runtime/vega-cubism-web-viewer.mjs",
       "default": "./dist/web-runtime/vega-cubism-web-viewer.mjs"
     },
+    "./export": {
+      "types": "./dist/export.d.ts",
+      "import": "./dist/export.js",
+      "default": "./dist/export.js"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {
@@ -96,5 +101,8 @@
       "android",
       "ios"
     ]
+  },
+  "dependencies": {
+    "fflate": "^0.8.3"
   }
 }

@@ -32,6 +32,7 @@ export interface CubismModelViewerLoadOptions {
   readonly harmonicMotion?: AdvHarmonicMotionData | null;
   readonly defaultMotionName?: string;
   readonly defaultExpressionName?: string;
+  readonly signal?: AbortSignal;
   readonly physics?: boolean;
   readonly lighting?: UnityCubismLightingState;
   readonly maskBufferSize?: number;
@@ -65,6 +66,11 @@ export interface CubismModelViewerFocusAnchor {
 /** Per-call transport restoration policy; explicit values override viewer loop state. */
 export type CubismModelViewerMotionPositionOptions = AdvCubismMotionPositionOptions;
 
+/** Scoped playback behavior for an interactive motion request. */
+export interface CubismModelViewerMotionPlaybackOptions {
+  readonly oneShot?: boolean;
+}
+
 function finite(value: unknown, fallback = 0): number {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : fallback;
@@ -72,6 +78,12 @@ function finite(value: unknown, fallback = 0): number {
 
 function safeDimension(value: unknown): number {
   return Math.max(1, Math.round(finite(value, 1)));
+}
+
+function abortError(modelUrl: string): Error {
+  const error = new Error(`Cubism model loading was aborted: ${modelUrl}`);
+  error.name = "AbortError";
+  return error;
 }
 
 /**
@@ -121,6 +133,9 @@ export class CubismModelViewer {
   private animationFrame = 0;
   private previousFrameTime = 0;
   private loadGeneration = 0;
+  private oneShotMotionPreview: {
+    readonly loopMotionName: string;
+  } | null = null;
 
   constructor(options: CubismModelViewerOptions) {
     this.canvas = options.canvas;
@@ -179,6 +194,7 @@ export class CubismModelViewer {
 
   async load(options: CubismModelViewerLoadOptions): Promise<void> {
     if (this.destroyed) throw new Error("A destroyed Cubism model viewer cannot load a model");
+    if (options.signal?.aborted) throw abortError(options.modelUrl);
     const generation = ++this.loadGeneration;
     this.loadOptions = options;
     this.renderFaulted = false;
@@ -196,8 +212,9 @@ export class CubismModelViewer {
       physics: options.physics ?? true,
       breath: false,
       lighting: options.lighting ?? DEFAULT_UNITY_CUBISM_LIGHTING,
+      signal: options.signal,
     });
-    if (this.destroyed || generation !== this.loadGeneration || this.contextLost) {
+    if (this.destroyed || generation !== this.loadGeneration || this.contextLost || options.signal?.aborted) {
       model.release();
       return;
     }
@@ -206,6 +223,7 @@ export class CubismModelViewer {
     this.playback.apply(model);
     model.setEyeBlinkEnabled(this.eyeBlinkEnabled);
     model.setMotionClockFrozen(this.poseFrozen);
+    model.setAnimationTimeFrozen(this.poseFrozen);
     model.setPaused(this.paused);
     this.harmonicMotion.setPaused(this.paused || this.poseFrozen);
     if (options.defaultMotionName) model.playMotion(options.defaultMotionName);
@@ -291,10 +309,9 @@ export class CubismModelViewer {
   }
 
   /**
-   * Pose mode: hold every authored and procedural animation channel still
-   * (motion, expressions, harmonic sway, auto-blink, focus integration) while
-   * physics keeps evaluating so hair and clothes settle around the posed
-   * angles instead of freezing mid-swing.
+   * Pose mode: hold every authored and procedural animation channel still,
+   * including physics, Cubism pose fades, blink, harmonic sway, and focus
+   * integration. The stage continues drawing the same frozen frame.
    */
   setPoseFrozen(frozen: boolean): void {
     const next = Boolean(frozen);
@@ -302,6 +319,7 @@ export class CubismModelViewer {
     this.poseFrozen = next;
     this.harmonicMotion.setPaused(next || this.paused);
     this.model?.setMotionClockFrozen(next);
+    this.model?.setAnimationTimeFrozen(next);
     if (!next) {
       this.frameClock.reset();
       this.previousFrameTime = performance.now();
@@ -402,19 +420,63 @@ export class CubismModelViewer {
     const bounded = Math.min(factor, maximum / Math.max(restoreWidth, restoreHeight));
     try {
       this.setSize(Math.round(restoreWidth * bounded), Math.round(restoreHeight * bounded));
-      copy(this.canvas);
+      try {
+        copy(this.canvas);
+      } catch {
+        // The canvas belongs to the caller. A failed read/copy is a capture
+        // failure, not evidence that this viewer's renderer is unusable.
+        return false;
+      }
       return true;
     } catch (error) {
       this.renderFaulted = true;
       this.onError?.(error);
       return false;
     } finally {
-      this.setSize(restoreWidth, restoreHeight);
+      try {
+        this.setSize(restoreWidth, restoreHeight);
+      } catch (error) {
+        // If restoring the live canvas itself fails, that is an internal
+        // renderer fault even when the caller's copy also failed.
+        this.renderFaulted = true;
+        this.onError?.(error);
+      }
     }
   }
 
-  playMotion(name: string, fadeInSeconds?: number): boolean {
+  playMotion(
+    name: string,
+    fadeInSecondsOrOptions?: number | CubismModelViewerMotionPlaybackOptions,
+    options: CubismModelViewerMotionPlaybackOptions = {},
+  ): boolean {
+    const fadeInSeconds = typeof fadeInSecondsOrOptions === "number" ? fadeInSecondsOrOptions : undefined;
+    const playbackOptions =
+      typeof fadeInSecondsOrOptions === "object" && fadeInSecondsOrOptions ? fadeInSecondsOrOptions : options;
+    if (playbackOptions.oneShot) {
+      if (!this.oneShotMotionPreview) {
+        this.oneShotMotionPreview = {
+          loopMotionName: this.loopMotionName,
+        };
+      }
+      // A pose override is an absolute late write. Remove it for this scoped
+      // request so the authored motion can actually reach the renderer.
+      this.parameterOverrides = {};
+      this.loopMotionName = "";
+      this.model?.setDefaultMotionRestartSuppressed(true);
+    }
     return this.model?.playMotion(name, fadeInSeconds) ?? false;
+  }
+
+  /** Complete a scoped one-shot after its final frame has been observed. */
+  finishMotionPreview(): void {
+    const preview = this.oneShotMotionPreview;
+    if (!preview) return;
+    this.oneShotMotionPreview = null;
+    this.model?.setDefaultMotionRestartSuppressed(false);
+    // The host has captured the final parameter values and installed them as
+    // the new pose before calling this method. Restore transport settings only;
+    // restoring the old parameter map here would overwrite that final pose.
+    this.loopMotionName = preview.loopMotionName;
   }
 
   /** Restore an authored motion after host transport seek/retry. */
@@ -436,6 +498,7 @@ export class CubismModelViewer {
   }
 
   stopMotions(): void {
+    if (this.oneShotMotionPreview) this.finishMotionPreview();
     this.loopMotionName = "";
     this.model?.stopMotions();
   }
@@ -461,7 +524,13 @@ export class CubismModelViewer {
     try {
       if (this.model && deltaSeconds != null) {
         this.updateModel(deltaSeconds);
-        if (!this.paused && !this.poseFrozen && this.loopMotionName && !this.model.isMotionPlaying)
+        if (
+          !this.paused &&
+          !this.poseFrozen &&
+          !this.oneShotMotionPreview &&
+          this.loopMotionName &&
+          !this.model.isMotionPlaying
+        )
           this.model.playMotion(this.loopMotionName);
         return true;
       }
@@ -521,10 +590,11 @@ export class CubismModelViewer {
     const model = this.model;
     if (!model) return;
     for (const step of cubismPlaybackSteps(deltaSeconds, this.playback.rate)) {
-      // Physics keeps its real step while frozen so posed angles settle; the
-      // model itself drops motion/expression/blink channels in that mode.
-      const blends = this.breathEnabled && !this.poseFrozen ? this.harmonicMotion.advance(step, model) : [];
-      model.update(step, {
+      // A pose is a temporal snapshot. Do not let physics, Cubism pose fades,
+      // blink, or any other model-owned clock move while it is displayed.
+      const effectiveStep = this.poseFrozen ? 0 : step;
+      const blends = this.breathEnabled && !this.poseFrozen ? this.harmonicMotion.advance(effectiveStep, model) : [];
+      model.update(effectiveStep, {
         focusX: this.focusX,
         focusY: this.focusY,
         overrides: this.parameterOverrides,
@@ -661,6 +731,7 @@ export class CubismModelViewer {
     this.model = null;
     this.currentModelBounds = null;
     this.parameterOverrides = {};
+    this.oneShotMotionPreview = null;
   }
 
   private acquireShaderContext(): void {
