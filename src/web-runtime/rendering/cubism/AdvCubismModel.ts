@@ -72,6 +72,12 @@ export interface CubismParameterValue {
   readonly defaultValue: number;
 }
 
+export interface CubismPartValue {
+  readonly index: number;
+  readonly id: string;
+  readonly opacity: number;
+}
+
 export interface CubismDrawableBounds {
   readonly x: number;
   readonly y: number;
@@ -231,6 +237,7 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
   private setting: CubismModelSettingJson;
   private elapsedSeconds = 0;
   private paused = false;
+  private motionClockFrozen = false;
   private motionSpeed = 1;
   private readonly eyeBlinkBaseValues: number[] = [];
   private eyeBlinkEnabled = true;
@@ -596,12 +603,29 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     this.eyeBlinkEnabled = enabled;
   }
 
+  /**
+   * Freeze only the authored motion/expression clocks and procedural animation
+   * (auto-blink, idle restart) without the pause-time request slots. Used by
+   * the standalone viewer's pose mode: physics keeps evaluating so posed
+   * angles settle naturally while everything else holds still.
+   */
+  setMotionClockFrozen(frozen: boolean): void {
+    this.motionClockFrozen = Boolean(frozen);
+  }
+
   /** Live2DCharacter.SetMotionSpeed: motion and auto-blink, not expression. */
   setMotionSpeed(speed: number): void {
     this.motionSpeed = Math.max(0.001, Number(speed) || 1);
   }
 
   get isMotionPlaying(): boolean {
+    return !this._motionManager.isFinished();
+  }
+
+  /** True while the requested motion is still loading or playing. */
+  get isMotionBusy(): boolean {
+    if (!this.requestedMotion) return false;
+    if (this.loadingMotions.has(this.requestedMotion.name)) return true;
     return !this._motionManager.isFinished();
   }
 
@@ -632,6 +656,27 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
       });
     }
     return values;
+  }
+
+  partValues(): CubismPartValue[] {
+    const values: CubismPartValue[] = [];
+    for (let index = 0; index < this._model.getPartCount(); index += 1) {
+      values.push({
+        index,
+        id: this._model.getPartId(index).getString().s,
+        opacity: this._model.getPartOpacityByIndex(index),
+      });
+    }
+    return values;
+  }
+
+  setPartOpacity(id: string, opacity: number): void {
+    let handle = this.parameterIds.get(id);
+    if (!handle) {
+      handle = CubismFramework.getIdManager().getId(id);
+      this.parameterIds.set(id, handle);
+    }
+    this._model.setPartOpacityById(handle, Math.max(0, Math.min(1, opacity)));
   }
 
   drawableBounds(visibleOnly = true): CubismDrawableBounds | null {
@@ -971,10 +1016,10 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     // blink, physics, lip sync and late ADV inputs must remain live; otherwise
     // one stale Pause latch turns the whole model into a static final-frame
     // image and is indistinguishable from intentional controller state.
-    const motionDelta = this.paused ? 0 : delta * this.motionSpeed;
+    const motionDelta = this.paused || this.motionClockFrozen ? 0 : delta * this.motionSpeed;
     const motionUpdated = this._motionManager.updateMotion(this._model, motionDelta);
     this._model.saveParameters();
-    this._expressionManager.updateMotion(this._model, this.paused ? 0 : delta);
+    this._expressionManager.updateMotion(this._model, this.paused || this.motionClockFrozen ? 0 : delta);
     // PlayMotion disables AutoEyeBlinkInput for an ordinary authored motion,
     // while Idle immediately restores the controller's configured blink flag
     // after starting DefaultMotionName. The default clip is finite and gets
@@ -984,7 +1029,7 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
       motionUpdated && Boolean(this.defaultMotionName) && this.requestedMotion?.name === this.defaultMotionName;
     this.applyMultiplicativeEyeBlink(
       delta,
-      this.eyeBlinkEnabled && (this.paused || !motionUpdated || defaultIdleIsUpdating),
+      this.eyeBlinkEnabled && !this.motionClockFrozen && (this.paused || !motionUpdated || defaultIdleIsUpdating),
     );
 
     // Cubism's interactive focus is additive: eyes lead, the head follows over
@@ -1016,11 +1061,9 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
       if (frame.mouthForm != null) this._model.setParameterValueById(this.mouthFormId, frame.mouthForm);
     }
     const overrides = frame.overrides;
-    if (overrides) {
-      for (const id in overrides) {
-        if (Object.hasOwn(overrides, id)) this.setParameter(id, overrides[id]);
-      }
-    }
+    // Harmonic-motion blends land before host overrides so a posed parameter
+    // always wins over the additive sway channel; applying overrides first let
+    // the blend sum reappear on top and made posed heads oscillate.
     for (const blend of frame.blends || []) {
       let handle = this.parameterIds.get(blend.id);
       if (!handle) {
@@ -1030,6 +1073,11 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
       if (blend.mode === 1) this._model.addParameterValueById(handle, blend.value, 1);
       else if (blend.mode === 2) this._model.multiplyParameterValueById(handle, blend.value, 1);
       else this._model.setParameterValueById(handle, blend.value, 1);
+    }
+    if (overrides) {
+      for (const id in overrides) {
+        if (Object.hasOwn(overrides, id)) this.setParameter(id, overrides[id]);
+      }
     }
 
     this._breath?.updateParameters(this._model, delta);
@@ -1049,6 +1097,7 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     // Non-default motions intentionally keep their native final-frame hold.
     if (
       !this.paused &&
+      !this.motionClockFrozen &&
       this.defaultMotionName &&
       this.motions.has(this.defaultMotionName) &&
       this.requestedMotion?.name === this.defaultMotionName &&

@@ -12,6 +12,7 @@ import {
   type AdvHarmonicMotionData,
   type CubismDrawableBounds,
   type CubismParameterValue,
+  type CubismPartValue,
   type UnityCubismLightingState,
 } from "../runtime-bridge";
 import {
@@ -109,6 +110,8 @@ export class CubismModelViewer {
   private modelScale = 1;
   private breathEnabled = true;
   private eyeBlinkEnabled = true;
+  private poseFrozen = false;
+  private clearColor: readonly [number, number, number, number] = [0, 0, 0, 0];
   private readonly playback = new CubismViewerPlaybackState();
   private paused = false;
   private contextLost = false;
@@ -156,6 +159,11 @@ export class CubismModelViewer {
     return this.model?.isMotionPlaying ?? false;
   }
 
+  /** True while the requested motion is still loading or playing. */
+  get isMotionBusy(): boolean {
+    return this.model?.isMotionBusy ?? false;
+  }
+
   get motionNames(): readonly string[] {
     return this.model ? [...this.model.motions.keys()] : [];
   }
@@ -197,8 +205,9 @@ export class CubismModelViewer {
     this.model = model;
     this.playback.apply(model);
     model.setEyeBlinkEnabled(this.eyeBlinkEnabled);
+    model.setMotionClockFrozen(this.poseFrozen);
     model.setPaused(this.paused);
-    this.harmonicMotion.setPaused(this.paused);
+    this.harmonicMotion.setPaused(this.paused || this.poseFrozen);
     if (options.defaultMotionName) model.playMotion(options.defaultMotionName);
     if (options.defaultExpressionName) model.playExpression(options.defaultExpressionName);
     model.primeInitialFrame({
@@ -281,6 +290,35 @@ export class CubismModelViewer {
     this.evaluateWithoutAdvancing();
   }
 
+  /**
+   * Pose mode: hold every authored and procedural animation channel still
+   * (motion, expressions, harmonic sway, auto-blink, focus integration) while
+   * physics keeps evaluating so hair and clothes settle around the posed
+   * angles instead of freezing mid-swing.
+   */
+  setPoseFrozen(frozen: boolean): void {
+    const next = Boolean(frozen);
+    if (this.poseFrozen === next) return;
+    this.poseFrozen = next;
+    this.harmonicMotion.setPaused(next || this.paused);
+    this.model?.setMotionClockFrozen(next);
+    if (!next) {
+      this.frameClock.reset();
+      this.previousFrameTime = performance.now();
+    }
+    this.evaluateWithoutAdvancing();
+  }
+
+  /** Opaque flat backdrop; null restores the transparent stage. */
+  setBackgroundColor(color: { r: number; g: number; b: number } | null): void {
+    if (!color) {
+      this.clearColor = [0, 0, 0, 0];
+    } else {
+      this.clearColor = [color.r, color.g, color.b, 1];
+    }
+    this.render();
+  }
+
   setParameterOverrides(values: Readonly<Record<string, number>>): void {
     this.parameterOverrides = { ...values };
     this.evaluateWithoutAdvancing();
@@ -333,6 +371,48 @@ export class CubismModelViewer {
     return this.model?.parameterValues() ?? [];
   }
 
+  parts(): CubismPartValue[] {
+    return this.model?.partValues() ?? [];
+  }
+
+  setPartOpacity(id: string, opacity: number): void {
+    if (!this.model || this.contextLost || this.renderFaulted) return;
+    try {
+      this.model.setPartOpacity(id, opacity);
+      // Part opacities only propagate to drawable opacities inside a core
+      // model update, so re-evaluate instead of just redrawing.
+      this.evaluateWithoutAdvancing();
+    } catch (error) {
+      this.renderFaulted = true;
+      this.onError?.(error);
+    }
+  }
+
+  /**
+   * Re-render the stage at an integer supersampling factor, let the caller copy
+   * the enlarged drawing buffer synchronously, then restore the live size. The
+   * WebGL buffer is only readable inside the callback.
+   */
+  captureSupersampled(scale: number, copy: (canvas: HTMLCanvasElement) => void): boolean {
+    if (!this.model || this.contextLost || this.renderFaulted || this.destroyed) return false;
+    const restoreWidth = this.width;
+    const restoreHeight = this.height;
+    const factor = Math.max(1, finite(scale, 1));
+    const maximum = Math.max(1, Number(this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE)) || 4096);
+    const bounded = Math.min(factor, maximum / Math.max(restoreWidth, restoreHeight));
+    try {
+      this.setSize(Math.round(restoreWidth * bounded), Math.round(restoreHeight * bounded));
+      copy(this.canvas);
+      return true;
+    } catch (error) {
+      this.renderFaulted = true;
+      this.onError?.(error);
+      return false;
+    } finally {
+      this.setSize(restoreWidth, restoreHeight);
+    }
+  }
+
   playMotion(name: string, fadeInSeconds?: number): boolean {
     return this.model?.playMotion(name, fadeInSeconds) ?? false;
   }
@@ -375,13 +455,13 @@ export class CubismModelViewer {
   advanceFrame(elapsedSeconds: number): boolean {
     if (this.destroyed) return false;
     const elapsed = Math.max(0, finite(elapsedSeconds));
-    const focusChanged = this.advanceFocus(elapsed);
+    const focusChanged = this.poseFrozen ? false : this.advanceFocus(elapsed);
     const deltaSeconds = this.frameClock.advance(elapsed, this.targetFrameRate);
     if (this.contextLost || this.renderFaulted) return false;
     try {
       if (this.model && deltaSeconds != null) {
         this.updateModel(deltaSeconds);
-        if (!this.paused && this.loopMotionName && !this.model.isMotionPlaying)
+        if (!this.paused && !this.poseFrozen && this.loopMotionName && !this.model.isMotionPlaying)
           this.model.playMotion(this.loopMotionName);
         return true;
       }
@@ -441,7 +521,9 @@ export class CubismModelViewer {
     const model = this.model;
     if (!model) return;
     for (const step of cubismPlaybackSteps(deltaSeconds, this.playback.rate)) {
-      const blends = this.breathEnabled ? this.harmonicMotion.advance(step, model) : [];
+      // Physics keeps its real step while frozen so posed angles settle; the
+      // model itself drops motion/expression/blink channels in that mode.
+      const blends = this.breathEnabled && !this.poseFrozen ? this.harmonicMotion.advance(step, model) : [];
       model.update(step, {
         focusX: this.focusX,
         focusY: this.focusY,
@@ -454,7 +536,7 @@ export class CubismModelViewer {
   private evaluateWithoutAdvancing(): void {
     const model = this.model;
     if (!model || this.contextLost || this.renderFaulted) return;
-    const blends = this.breathEnabled ? this.harmonicMotion.current(model) : [];
+    const blends = this.breathEnabled && !this.poseFrozen ? this.harmonicMotion.current(model) : [];
     model.update(0, {
       focusX: this.focusX,
       focusY: this.focusY,
@@ -569,7 +651,8 @@ export class CubismModelViewer {
     this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
     this.gl.disable(this.gl.SCISSOR_TEST);
     this.gl.colorMask(true, true, true, true);
-    this.gl.clearColor(0, 0, 0, 0);
+    const [red, green, blue, alpha] = this.clearColor;
+    this.gl.clearColor(red, green, blue, alpha);
     this.gl.clear(this.gl.COLOR_BUFFER_BIT);
   }
 
