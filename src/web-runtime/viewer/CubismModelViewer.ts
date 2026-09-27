@@ -31,6 +31,11 @@ export interface CubismModelViewerLoadOptions {
   readonly modelUrl: string;
   readonly harmonicMotion?: AdvHarmonicMotionData | null;
   readonly defaultMotionName?: string;
+  /**
+   * Start and repeat the authored idle automatically. Interactive hosts can
+   * disable this and use explicit motion/loop controls instead.
+   */
+  readonly autoIdleMotion?: boolean;
   readonly defaultExpressionName?: string;
   readonly signal?: AbortSignal;
   readonly physics?: boolean;
@@ -136,6 +141,7 @@ export class CubismModelViewer {
   private oneShotMotionPreview: {
     readonly loopMotionName: string;
   } | null = null;
+  private autoIdleMotion = true;
 
   constructor(options: CubismModelViewerOptions) {
     this.canvas = options.canvas;
@@ -197,6 +203,7 @@ export class CubismModelViewer {
     if (options.signal?.aborted) throw abortError(options.modelUrl);
     const generation = ++this.loadGeneration;
     this.loadOptions = options;
+    this.autoIdleMotion = options.autoIdleMotion ?? true;
     this.renderFaulted = false;
     this.releaseModel();
     this.harmonicMotion.configure(options.harmonicMotion);
@@ -220,13 +227,14 @@ export class CubismModelViewer {
     }
 
     this.model = model;
+    model.setDefaultMotionRestartSuppressed(!this.autoIdleMotion);
     this.playback.apply(model);
     model.setEyeBlinkEnabled(this.eyeBlinkEnabled);
     model.setMotionClockFrozen(this.poseFrozen);
     model.setAnimationTimeFrozen(this.poseFrozen);
     model.setPaused(this.paused);
     this.harmonicMotion.setPaused(this.paused || this.poseFrozen);
-    if (options.defaultMotionName) model.playMotion(options.defaultMotionName);
+    if (this.autoIdleMotion && options.defaultMotionName) model.playMotion(options.defaultMotionName);
     if (options.defaultExpressionName) model.playExpression(options.defaultExpressionName);
     model.primeInitialFrame({
       blends: this.breathEnabled ? this.harmonicMotion.current(model) : [],
@@ -472,7 +480,7 @@ export class CubismModelViewer {
     const preview = this.oneShotMotionPreview;
     if (!preview) return;
     this.oneShotMotionPreview = null;
-    this.model?.setDefaultMotionRestartSuppressed(false);
+    this.model?.setDefaultMotionRestartSuppressed(!this.autoIdleMotion);
     // The host has captured the final parameter values and installed them as
     // the new pose before calling this method. Restore transport settings only;
     // restoring the old parameter map here would overwrite that final pose.

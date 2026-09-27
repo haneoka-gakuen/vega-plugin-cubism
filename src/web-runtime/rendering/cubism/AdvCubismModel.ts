@@ -1079,9 +1079,11 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
       if (frame.mouthForm != null) this._model.setParameterValueById(this.mouthFormId, frame.mouthForm);
     }
     const overrides = frame.overrides;
-    // Harmonic-motion blends land before host overrides so a posed parameter
-    // always wins over the additive sway channel; applying overrides first let
-    // the blend sum reappear on top and made posed heads oscillate.
+    // Harmonic-motion blends are applied before the model-owned procedural
+    // channels. Host overrides are intentionally installed below those
+    // channels, immediately before the late ADV path, so a posed parameter
+    // remains absolute even when physics or Cubism pose evaluation runs with
+    // a zero delta during a frozen frame.
     for (const blend of frame.blends || []) {
       let handle = this.parameterIds.get(blend.id);
       if (!handle) {
@@ -1092,15 +1094,15 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
       else if (blend.mode === 2) this._model.multiplyParameterValueById(handle, blend.value, 1);
       else this._model.setParameterValueById(handle, blend.value, 1);
     }
+    this._breath?.updateParameters(this._model, effectDelta);
+    this._physics?.evaluate(this._model, effectDelta);
+    this._pose?.updateParameters(this._model, effectDelta);
+
     if (overrides) {
       for (const id in overrides) {
         if (Object.hasOwn(overrides, id)) this.setParameter(id, overrides[id]);
       }
     }
-
-    this._breath?.updateParameters(this._model, effectDelta);
-    this._physics?.evaluate(this._model, effectDelta);
-    this._pose?.updateParameters(this._model, effectDelta);
 
     this.applyLateAdvOverrides(frame);
     this._model.update();
