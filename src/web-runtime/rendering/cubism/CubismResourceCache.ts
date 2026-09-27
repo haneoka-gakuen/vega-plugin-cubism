@@ -4,17 +4,28 @@ interface ArrayBufferCacheEntry {
   byteLength: number | null;
 }
 
+interface ImageCacheEntry {
+  pending: Promise<TexImageSource>;
+  byteLength: number | null;
+  settled: boolean;
+}
+
 const arrayBufferCache = new Map<string, ArrayBufferCacheEntry>();
-const imageCache = new Map<string, Promise<TexImageSource>>();
+const imageCache = new Map<string, ImageCacheEntry>();
 const DEFAULT_IMAGE_ENTRY_LIMIT = 64;
+const DEFAULT_IMAGE_BYTE_LIMIT = 64 * 1024 * 1024;
 const DEFAULT_ARRAY_BUFFER_BYTE_LIMIT = 64 * 1024 * 1024;
 let imageEntryLimit = DEFAULT_IMAGE_ENTRY_LIMIT;
+let imageByteLimit = DEFAULT_IMAGE_BYTE_LIMIT;
 let arrayBufferByteLimit = DEFAULT_ARRAY_BUFFER_BYTE_LIMIT;
+let imageBytes = 0;
 let arrayBufferBytes = 0;
 
 export interface CubismResourceCacheOptions {
-  /** Maximum decoded image objects retained by the shared fallback loader. */
+  /** Maximum settled decoded image objects retained by the shared fallback loader. */
   readonly imageEntryLimit?: number;
+  /** Maximum estimated RGBA bytes retained by settled decoded images. */
+  readonly imageByteLimit?: number;
   /** Maximum total bytes retained for fulfilled model, motion, and metadata buffers. */
   readonly arrayBufferByteLimit?: number;
 }
@@ -85,14 +96,50 @@ export function createOwnedAbortSignal(parent?: AbortSignal): OwnedAbortSignal {
   };
 }
 
-function touchImage(key: string, value: Promise<TexImageSource>): void {
+function decodedImageByteLength(image: TexImageSource): number {
+  const candidate = image as unknown as {
+    readonly naturalWidth?: unknown;
+    readonly naturalHeight?: unknown;
+    readonly width?: unknown;
+    readonly height?: unknown;
+  };
+  const naturalWidth = Number(candidate.naturalWidth);
+  const naturalHeight = Number(candidate.naturalHeight);
+  const width = Number.isFinite(naturalWidth) && naturalWidth > 0 ? naturalWidth : Number(candidate.width);
+  const height = Number.isFinite(naturalHeight) && naturalHeight > 0 ? naturalHeight : Number(candidate.height);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return 0;
+  const pixels = Math.trunc(width) * Math.trunc(height);
+  if (!Number.isFinite(pixels) || pixels <= 0) return 0;
+  return Math.min(Number.MAX_SAFE_INTEGER, pixels * 4);
+}
+
+function deleteImageEntry(key: string, expected?: ImageCacheEntry): void {
+  const entry = imageCache.get(key);
+  if (!entry || (expected && entry !== expected)) return;
+  imageCache.delete(key);
+  imageBytes = Math.max(0, imageBytes - (entry.byteLength ?? 0));
+}
+
+function trimImageCache(): void {
+  while (imageCache.size > imageEntryLimit || imageBytes > imageByteLimit) {
+    let removed = false;
+    for (const [key, entry] of imageCache) {
+      // Pending requests remain shared until they settle. Eviction only drops
+      // the map reference; callers holding the returned image keep it valid.
+      if (!entry.settled) continue;
+      deleteImageEntry(key, entry);
+      removed = true;
+      break;
+    }
+    if (!removed) break;
+  }
+}
+
+function touchImage(key: string, value: ImageCacheEntry): void {
+  if (imageCache.get(key) !== value) return;
   imageCache.delete(key);
   imageCache.set(key, value);
-  while (imageCache.size > imageEntryLimit) {
-    const oldest = imageCache.keys().next().value as string | undefined;
-    if (oldest == null) break;
-    imageCache.delete(oldest);
-  }
+  trimImageCache();
 }
 
 function touchArrayBuffer(key: string, entry: ArrayBufferCacheEntry): void {
@@ -143,16 +190,24 @@ export function configureCubismResourceCache(options: number | CubismResourceCac
     if (options.imageEntryLimit !== undefined) {
       imageEntryLimit = cacheLimit(options.imageEntryLimit, DEFAULT_IMAGE_ENTRY_LIMIT);
     }
+    if (options.imageByteLimit !== undefined) {
+      imageByteLimit = cacheLimit(options.imageByteLimit, DEFAULT_IMAGE_BYTE_LIMIT);
+    }
     if (options.arrayBufferByteLimit !== undefined) {
       arrayBufferByteLimit = cacheLimit(options.arrayBufferByteLimit, DEFAULT_ARRAY_BUFFER_BYTE_LIMIT);
     }
   }
-  while (imageCache.size > imageEntryLimit) {
-    const oldest = imageCache.keys().next().value;
-    if (oldest == null) break;
-    imageCache.delete(oldest);
-  }
+  trimImageCache();
   trimArrayBufferCache();
+}
+
+function retainFulfilledImage(url: string, entry: ImageCacheEntry, image: TexImageSource): TexImageSource {
+  entry.settled = true;
+  entry.byteLength = decodedImageByteLength(image);
+  if (imageCache.get(url) !== entry) return image;
+  imageBytes += entry.byteLength;
+  touchImage(url, entry);
+  return image;
 }
 
 function retainFulfilledArrayBuffer(url: string, entry: ArrayBufferCacheEntry, buffer: ArrayBuffer): ArrayBuffer {
@@ -252,18 +307,26 @@ export function fetchCachedArrayBuffer(url: string, signal?: AbortSignal): Promi
 
 export function loadCachedImage(url: string, signal?: AbortSignal): Promise<TexImageSource> {
   if (signal?.aborted) return Promise.reject(abortError(url));
-  let pending = imageCache.get(url);
-  if (!pending) {
-    const created = loadImage(url).catch((error: unknown) => {
-      if (imageCache.get(url) === created) imageCache.delete(url);
-      throw error;
-    });
-    pending = created;
+  let entry = imageCache.get(url);
+  if (!entry) {
+    const created: ImageCacheEntry = {
+      pending: Promise.resolve(null as unknown as TexImageSource),
+      byteLength: null,
+      settled: false,
+    };
+    created.pending = loadImage(url)
+      .then((image) => retainFulfilledImage(url, created, image))
+      .catch((error: unknown) => {
+        if (imageCache.get(url) === created) deleteImageEntry(url, created);
+        throw error;
+      });
+    imageCache.set(url, created);
+    entry = created;
     touchImage(url, created);
   } else {
-    touchImage(url, pending);
+    touchImage(url, entry);
   }
-  return waitForCachedResource(pending, signal, url);
+  return waitForCachedResource(entry.pending, signal, url);
 }
 
 export const cachedCubismModelResourceLoader: CubismModelResourceLoader = {
@@ -334,6 +397,7 @@ interface ResolverImageCacheEntry {
   readonly controller: AbortController;
   waiters: number;
   settled: boolean;
+  byteLength: number | null;
 }
 
 function waitForResolverImage(
@@ -375,17 +439,24 @@ export function cubismResourceLoaderFor(resources: CubismStoryResourceResolver):
   if (existing) return existing;
 
   const images = new Map<string, ResolverImageCacheEntry>();
+  let imageBytes = 0;
   const touchResolverImage = (url: string, entry: ResolverImageCacheEntry): void => {
     if (images.get(url) !== entry) return;
     images.delete(url);
     images.set(url, entry);
   };
+  const deleteResolverImage = (url: string, expected?: ResolverImageCacheEntry): void => {
+    const entry = images.get(url);
+    if (!entry || (expected && entry !== expected)) return;
+    images.delete(url);
+    imageBytes = Math.max(0, imageBytes - (entry.byteLength ?? 0));
+  };
   const trimResolverImages = (): void => {
-    while (images.size > imageEntryLimit) {
+    while (images.size > imageEntryLimit || imageBytes > imageByteLimit) {
       let removed = false;
       for (const [url, entry] of images) {
         if (!entry.settled) continue;
-        images.delete(url);
+        deleteResolverImage(url, entry);
         removed = true;
         break;
       }
@@ -411,6 +482,7 @@ export function cubismResourceLoaderFor(resources: CubismStoryResourceResolver):
         controller,
         waiters: 0,
         settled: false,
+        byteLength: null,
       };
       const created = entry;
       created.pending = loadBuffer(url, controller.signal)
@@ -418,13 +490,17 @@ export function cubismResourceLoaderFor(resources: CubismStoryResourceResolver):
         .then(
           (image) => {
             created.settled = true;
-            touchResolverImage(url, created);
-            trimResolverImages();
+            created.byteLength = decodedImageByteLength(image);
+            if (images.get(url) === created) {
+              imageBytes += created.byteLength;
+              touchResolverImage(url, created);
+              trimResolverImages();
+            }
             return image;
           },
           (error: unknown) => {
             created.settled = true;
-            if (images.get(url) === created) images.delete(url);
+            deleteResolverImage(url, created);
             throw error;
           },
         );
@@ -435,7 +511,7 @@ export function cubismResourceLoaderFor(resources: CubismStoryResourceResolver):
     }
     const current = entry;
     return waitForResolverImage(current, signal, url, () => {
-      if (images.get(url) === current) images.delete(url);
+      deleteResolverImage(url, current);
       current.controller.abort();
     });
   };
@@ -452,4 +528,5 @@ export function clearCubismResourceCache(): void {
   arrayBufferCache.clear();
   arrayBufferBytes = 0;
   imageCache.clear();
+  imageBytes = 0;
 }
