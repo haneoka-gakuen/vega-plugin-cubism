@@ -8,6 +8,7 @@
 
 import { CSM_ASSERT, CubismLogError } from '../utils/cubismdebug';
 import { CubismModel } from './cubismmodel';
+import { refreshCubismCoreViews } from '../../../rendering/cubism/CubismCoreHeap';
 
 /**
  * Mocデータの管理
@@ -35,8 +36,12 @@ export class CubismMoc {
       }
     }
 
-    const moc: Live2DCubismCore.Moc =
-      Live2DCubismCore.Moc.fromArrayBuffer(mocBytes);
+    let moc: Live2DCubismCore.Moc;
+    try {
+      moc = Live2DCubismCore.Moc.fromArrayBuffer(mocBytes);
+    } finally {
+      refreshCubismCoreViews();
+    }
 
     if (moc) {
       cubismMoc = new CubismMoc(moc);
@@ -68,9 +73,12 @@ export class CubismMoc {
   createModel(): CubismModel {
     let cubismModel: CubismModel = null;
 
-    const model: Live2DCubismCore.Model = Live2DCubismCore.Model.fromMoc(
-      this._moc
-    );
+    let model: Live2DCubismCore.Model;
+    try {
+      model = Live2DCubismCore.Model.fromMoc(this._moc);
+    } finally {
+      refreshCubismCoreViews();
+    }
 
     if (model) {
       cubismModel = new CubismModel(model);
@@ -130,9 +138,11 @@ export class CubismMoc {
    * .moc3 の整合性を検証する
    */
   public static hasMocConsistency(mocBytes: ArrayBuffer): boolean {
-    const isConsistent =
-      Live2DCubismCore.Moc.prototype.hasMocConsistency(mocBytes);
-    return isConsistent === 1 ? true : false;
+    try {
+      return Live2DCubismCore.Moc.prototype.hasMocConsistency(mocBytes) === 1;
+    } finally {
+      refreshCubismCoreViews();
+    }
   }
 
   _moc: Live2DCubismCore.Moc; // Mocデータ

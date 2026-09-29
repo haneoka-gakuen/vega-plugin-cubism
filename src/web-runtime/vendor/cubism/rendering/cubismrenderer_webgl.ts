@@ -160,6 +160,23 @@ export class CubismClippingManager_WebGL extends CubismClippingManager<CubismCli
     super(CubismClippingContext_WebGL);
   }
 
+  public override release(): void {
+    // The base manager owns clip metadata; this subclass owns the GPU atlas.
+    if (this.gl) {
+      for (let i = 0; i < (this._maskRenderTextures?.getSize() ?? 0); i++) {
+        this.gl.deleteFramebuffer(this._maskRenderTextures.at(i));
+      }
+      for (let i = 0; i < (this._maskColorBuffers?.getSize() ?? 0); i++) {
+        this.gl.deleteTexture(this._maskColorBuffers.at(i));
+      }
+    }
+    this._maskRenderTextures = null;
+    this._maskColorBuffers = null;
+    this._maskTexture = null;
+    this._currentMaskRenderTexture = null;
+    super.release();
+  }
+
   /**
    * クリッピングコンテキストを作成する。モデル描画時に実行する。
    * @param model モデルのインスタンス
@@ -421,7 +438,9 @@ export class CubismClippingContext_WebGL extends CubismClippingContext {
     clippingDrawableIndices: Int32Array,
     clipCount: number
   ) {
-    super(clippingDrawableIndices, clipCount);
+    // Mask IDs are immutable and retained across draws. Own this small list
+    // so growing Core memory cannot invalidate the clipping context.
+    super(clippingDrawableIndices.slice(), clipCount);
     this._owner = manager;
   }
 

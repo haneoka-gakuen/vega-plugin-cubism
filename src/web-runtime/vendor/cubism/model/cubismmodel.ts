@@ -15,6 +15,7 @@ import {
 import { csmMap } from '../type/csmmap';
 import { csmVector } from '../type/csmvector';
 import { CSM_ASSERT } from '../utils/cubismdebug';
+import { retainCubismCoreViews } from '../../../rendering/cubism/CubismCoreHeap';
 
 /**
  * SDK側から与えられたDrawableの乗算色・スクリーン色上書きフラグと
@@ -73,6 +74,7 @@ export class DrawableCullingData {
  * Mocデータから生成されるモデルのクラス。
  */
 export class CubismModel {
+  private _releaseCoreViews: (() => void) | null = null;
   private _geometryRevision = 0;
 
   public getGeometryRevision(): number {
@@ -1441,10 +1443,14 @@ export class CubismModel {
   public initialize(): void {
     CSM_ASSERT(this._model);
 
-    this._parameterValues = this._model.parameters.values;
-    this._partOpacities = this._model.parts.opacities;
-    this._parameterMaximumValues = this._model.parameters.maximumValues;
-    this._parameterMinimumValues = this._model.parameters.minimumValues;
+    const refreshAliases = (): void => {
+      this._parameterValues = this._model.parameters.values;
+      this._partOpacities = this._model.parts.opacities;
+      this._parameterMaximumValues = this._model.parameters.maximumValues;
+      this._parameterMinimumValues = this._model.parameters.minimumValues;
+    };
+    refreshAliases();
+    this._releaseCoreViews = retainCubismCoreViews(this._model, refreshAliases);
 
     {
       const parameterIds: string[] = this._model.parameters.ids;
@@ -1600,6 +1606,8 @@ export class CubismModel {
    * デストラクタ相当の処理
    */
   public release(): void {
+    this._releaseCoreViews?.();
+    this._releaseCoreViews = null;
     this._model.release();
     this._model = null;
   }

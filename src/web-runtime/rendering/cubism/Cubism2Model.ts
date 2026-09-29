@@ -1055,7 +1055,17 @@ export class Cubism2Model implements StoryCharacterModel {
     const model = this.liveModel;
     if (!model || this.released) return;
     this.retryRequestedResources();
-    if (this.paused) return;
+    if (this.paused) {
+      // Manual pose edits still refresh drawables while autonomous clocks and
+      // blink/breath/physics remain frozen.
+      for (const [id, value] of Object.entries(frame.overrides || {})) {
+        if (id && Number.isFinite(value)) model.setParamFloat(id, value);
+      }
+      this.applyLateStoryParameters(model, frame);
+      model.update();
+      this.updateSerialValue += 1;
+      return;
+    }
     const delta = Math.max(0, Math.min(0.1, Number(deltaSeconds) || 0));
     const localDelta = delta * this.motionSpeed;
     this.elapsedSeconds += localDelta;

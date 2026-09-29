@@ -68,7 +68,7 @@ export const restrictedCubismContentReason = (bytes, path = "") => {
   } catch {
     return "binary payload";
   }
-  if (permittedWebRuntimeSource(path)) return null;
+  if (permittedWebRuntimeSource(path) || ["README.md", "NOTICE.md", "SECURITY.md"].includes(normalizePath(path))) return null;
   if (live2dCopyright.test(text)) return "Live2D copyright signature";
   if (live2dLicense.test(text)) return "Live2D license signature";
   if (cubismSdkProduct.test(text)) return "Live2D Cubism SDK product signature";

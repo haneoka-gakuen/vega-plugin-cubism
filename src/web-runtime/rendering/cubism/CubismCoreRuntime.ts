@@ -1,4 +1,5 @@
 import { CubismFramework, LogLevel, Option } from "../../vendor/cubism/live2dcubismframework";
+import { refreshCubismCoreViews } from "./CubismCoreHeap";
 
 export interface CubismWebRuntimeSources {
   readonly cubismCoreUrl?: string;
@@ -148,6 +149,7 @@ export async function ensureCubismFramework(signal?: AbortSignal): Promise<void>
       option.logFunction = (message: string) => console.warn(`[Cubism] ${message}`);
       CubismFramework.startUp(option);
       CubismFramework.initialize(64 * 1024 * 1024);
+      refreshCubismCoreViews();
       if (!isLocalFrameworkReady()) {
         throw new Error("Cubism Framework initialized without an ID manager");
       }
