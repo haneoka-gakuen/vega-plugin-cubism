@@ -36,6 +36,12 @@ export interface StoryCharacterModel {
   /** Restore an authored motion at an absolute clip-local transport phase. */
   playMotionAt(name: string, positionSeconds: number, fadeInSeconds?: number, options?: { loop?: boolean }): boolean;
   playExpression(name: string, fadeInSeconds?: number): boolean;
+  /** Opcode 68: fade the clip's parameters in and loop it until stopParameterLoopMotion. */
+  playParameterLoopMotion?(name: string, fadeInSeconds?: number): boolean;
+  /** Ends a parameter loop, easing its parameters home over the clip's fade-out. */
+  stopParameterLoopMotion?(fadeSeconds?: number): void;
+  /** Opcode 69: stop/resume auto eye blink, easing the lids over `transitionSeconds`. */
+  setEyeBlinkStopped?(stopped: boolean, transitionSeconds?: number): void;
   prepareMotion(name: string): Promise<boolean>;
   prepareExpression(name: string): Promise<boolean>;
   isCurrentExpression(name: string): boolean;

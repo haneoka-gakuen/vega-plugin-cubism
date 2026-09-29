@@ -116,6 +116,8 @@ interface CubismPlaybackRequest {
   readonly fadeInSeconds?: number;
   readonly positionSeconds?: number;
   readonly positionOptions?: AdvCubismMotionPositionOptions;
+  /** Opcode 68: the clip loops with faded-in parameters until a stop request. */
+  readonly parameterLoop?: boolean;
 }
 
 function resolveResourceUrl(baseUrl: string, resource: string): string {
@@ -243,6 +245,13 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
   private motionSpeed = 1;
   private readonly eyeBlinkBaseValues: number[] = [];
   private eyeBlinkEnabled = true;
+  /** Opcode 69 transition: eyelids ease to open/blinking over this many seconds. */
+  private eyeBlinkWeight = 1;
+  private eyeBlinkTransition = 0;
+  /** Opcode 68: the motion requested as a parameter loop, until stopped or superseded. */
+  private parameterLoopName: string | null = null;
+  /** Parameter snapshot easing home after a parameter loop stops. */
+  private parameterLoopFade: { values: Float32Array; duration: number; elapsed: number } | null = null;
   private multiplyFallbackTexture: WebGLTexture | null = null;
   private ownedMultiplyTexture: WebGLTexture | null = null;
   private motionSync: AdvMotionSyncCoreAdapter | null = null;
@@ -651,6 +660,7 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     this.requestedMotion = null;
     this.pausedMotionRequest.clear();
     this.motionRequestSequence += 1;
+    this.parameterLoopName = null;
     this._motionManager.stopAllMotions();
   }
 
@@ -741,6 +751,41 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     return this.requestMotion(name, fadeInSeconds);
   }
 
+  playParameterLoopMotion(name: string, fadeInSeconds?: number): boolean {
+    if (!this.hasMotion(name)) return false;
+    this.parameterLoopName = name;
+    this.parameterLoopFade = null;
+    return this.requestMotion(name, fadeInSeconds, undefined, undefined, true);
+  }
+
+  /** StopParameterLoop(fade): `fadeSeconds` is the command's MotionFadeIn; default is the clip fade-out. */
+  stopParameterLoopMotion(fadeSeconds?: number): void {
+    const name = this.parameterLoopName;
+    if (!name) return;
+    this.parameterLoopName = null;
+    if (this.released || !this.isInitialized()) {
+      this.parameterLoopFade = null;
+      this.stopMotions();
+      return;
+    }
+    // Ease the loop's authored parameters home over the clip fade-out instead
+    // of snapping tear/glow style curves off at the stop command.
+    const fadeOut = fadeSeconds ?? this.motions.get(name)?.getFadeOutTime();
+    const duration = Number.isFinite(fadeOut) && (fadeOut as number) >= 0 ? (fadeOut as number) : 0.3;
+    const count = this._model.getParameterCount();
+    const values = new Float32Array(count);
+    for (let index = 0; index < count; index += 1) values[index] = this._model.getParameterValueByIndex(index);
+    this.parameterLoopFade = { values, duration, elapsed: 0 };
+    this.stopMotions();
+  }
+
+  /** AdvCharacterController.SetEyeBlinkStopped(stopped, transition = 0.2 s). */
+  setEyeBlinkStopped(stopped: boolean, transitionSeconds = 0): void {
+    this.eyeBlinkEnabled = !stopped;
+    this.eyeBlinkTransition = Math.max(0, Number.isFinite(transitionSeconds) ? transitionSeconds : 0);
+    if (this.eyeBlinkTransition === 0) this.eyeBlinkWeight = stopped ? 0 : 1;
+  }
+
   /** Restore an authored motion at an absolute clip-local transport phase. */
   playMotionAt(
     name: string,
@@ -756,17 +801,22 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     fadeInSeconds?: number,
     positionSeconds?: number,
     positionOptions?: AdvCubismMotionPositionOptions,
+    parameterLoop = false,
   ): boolean {
     if (!name || (!this.motions.has(name) && !this.buildMotionIndex().has(name))) return false;
     if (this.requestedMotion?.name && this.requestedMotion.name !== name) {
       this.motionRetries.succeed(this.requestedMotion.name);
     }
+    // An ordinary motion request supersedes a running parameter loop; the
+    // replacement clip plays exactly once.
+    if (!parameterLoop && this.parameterLoopName !== name) this.parameterLoopName = null;
     const request: CubismPlaybackRequest = {
       sequence: ++this.motionRequestSequence,
       name,
       fadeInSeconds,
       positionSeconds,
       positionOptions,
+      parameterLoop,
     };
     this.requestedMotion = request;
     if (this.paused) {
@@ -843,6 +893,12 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     const motion = this.motions.get(request.name);
     if (!motion) return false;
     motion.setFadeInTime(resolveCubismFadeIn(request.fadeInSeconds, this.motionFadeInTimes.get(request.name)));
+    // The cached CubismMotion instance is shared between loop and ordinary
+    // playback, so the loop flags are rewritten for every start instead of
+    // configured once. Loop restarts skip the fade (parameters hold their
+    // faded-in values across the wrap); a finite endTime would kill the loop.
+    motion.setIsLoop(Boolean(request.parameterLoop));
+    motion.setIsLoopFadeIn(!request.parameterLoop);
     const handle = this._motionManager.startMotionPriority(motion, false, MOTION_PRIORITY_FORCE);
     if (request.positionSeconds != null) {
       const entry = this._motionManager.getCubismMotionQueueEntry(handle);
@@ -1035,6 +1091,7 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
       this._model,
       this.paused || this.motionClockFrozen || this.animationTimeFrozen ? 0 : delta,
     );
+    this.applyParameterLoopFade(this.paused || this.motionClockFrozen || this.animationTimeFrozen ? 0 : delta);
     // PlayMotion disables AutoEyeBlinkInput for an ordinary authored motion,
     // while Idle immediately restores the controller's configured blink flag
     // after starting DefaultMotionName. The default clip is finite and gets
@@ -1042,9 +1099,17 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     // every idle blink and make the eyes look permanently posed.
     const defaultIdleIsUpdating =
       motionUpdated && Boolean(this.defaultMotionName) && this.requestedMotion?.name === this.defaultMotionName;
+    const blinkTarget = this.eyeBlinkEnabled ? 1 : 0;
+    if (this.eyeBlinkWeight !== blinkTarget) {
+      const step = this.eyeBlinkTransition > 0 ? effectDelta / this.eyeBlinkTransition : 1;
+      this.eyeBlinkWeight =
+        blinkTarget > this.eyeBlinkWeight
+          ? Math.min(blinkTarget, this.eyeBlinkWeight + step)
+          : Math.max(blinkTarget, this.eyeBlinkWeight - step);
+    }
     this.applyMultiplicativeEyeBlink(
       effectDelta,
-      this.eyeBlinkEnabled &&
+      this.eyeBlinkWeight > 0 &&
         !this.motionClockFrozen &&
         !this.animationTimeFrozen &&
         (this.paused || !motionUpdated || defaultIdleIsUpdating),
@@ -1129,6 +1194,28 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     }
   }
 
+  /**
+   * Eases the parameters a stopping parameter loop had authored back to the
+   * frame's base (saved plus expression) values. Applied after motion and
+   * expression updates so it overrides them, and per frame — nothing is saved
+   * into the restored base.
+   */
+  private applyParameterLoopFade(deltaSeconds: number): void {
+    const fade = this.parameterLoopFade;
+    if (!fade) return;
+    fade.elapsed += deltaSeconds;
+    const t = fade.duration > 0 ? Math.min(1, fade.elapsed / fade.duration) : 1;
+    const keep = 1 - t;
+    const count = Math.min(fade.values.length, this._model.getParameterCount());
+    for (let index = 0; index < count; index += 1) {
+      const base = this._model.getParameterValueByIndex(index);
+      const captured = fade.values[index] as number;
+      if (captured === base) continue;
+      this._model.setParameterValueByIndex(index, base + (captured - base) * keep);
+    }
+    if (t >= 1) this.parameterLoopFade = null;
+  }
+
   private applyMultiplicativeEyeBlink(deltaSeconds: number, canStartBlink: boolean): void {
     if (!this._eyeBlink) return;
     const phase = this._eyeBlink._blinkingState;
@@ -1137,7 +1224,7 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     // Native IsBlinking is consulted only by UpdateEyeBlinkIdling
     // (0x835c174). PlayMotion clears it, but a blink already in its closing,
     // closed or opening phase continues until the eyes are fully open.
-    if (!canStartBlink && !blinkInProgress) return;
+    if ((!canStartBlink && !blinkInProgress) || this.eyeBlinkWeight <= 0) return;
     const count = this.eyeBlinkIds.getSize();
     this.eyeBlinkBaseValues.length = count;
     for (let index = 0; index < count; index += 1) {
@@ -1149,7 +1236,8 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     this._eyeBlink.updateParameters(this._model, deltaSeconds, this.motionSpeed);
     for (let index = 0; index < count; index += 1) {
       const id = this.eyeBlinkIds.at(index);
-      const opening = this._model.getParameterValueById(id);
+      // The opcode 69 weight eases the lids to open (0) or full blink (1).
+      const opening = 1 - this.eyeBlinkWeight * (1 - this._model.getParameterValueById(id));
       this._model.setParameterValueById(id, this.eyeBlinkBaseValues[index] * opening);
     }
   }

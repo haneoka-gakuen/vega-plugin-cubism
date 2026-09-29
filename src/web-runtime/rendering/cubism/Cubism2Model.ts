@@ -587,6 +587,19 @@ export class Cubism2Model implements StoryCharacterModel {
     this.eyeBlinkEnabled = enabled;
   }
 
+  // Opcode 68/69 hooks. Cubism 2 models in Our Notes ADV never receive these
+  // commands (misc_ parameter loops and eye-blink controls are moc3-era), so
+  // the loop hooks stay unsupported instead of approximating moc3 behaviour.
+  playParameterLoopMotion(_name: string, _fadeInSeconds?: number): boolean {
+    return false;
+  }
+
+  stopParameterLoopMotion(_fadeSeconds?: number): void {}
+
+  setEyeBlinkStopped(stopped: boolean, _transitionSeconds = 0): void {
+    this.eyeBlinkEnabled = !stopped;
+  }
+
   resetExpressionParametersToDefault(): void {
     this.expressionRequestSequence += 1;
     this.requestedExpression = null;

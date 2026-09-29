@@ -587,6 +587,19 @@ class CanvasCubismStoryModel implements StoryCharacterModel {
     return this.model.playExpression(name, fadeInSeconds);
   }
 
+  playParameterLoopMotion(name: string, fadeInSeconds?: number): boolean {
+    this.selectedMotionName = name.trim();
+    return this.model.playParameterLoopMotion?.(name, fadeInSeconds) ?? false;
+  }
+
+  stopParameterLoopMotion(fadeSeconds?: number): void {
+    this.model.stopParameterLoopMotion?.(fadeSeconds);
+  }
+
+  setEyeBlinkStopped(stopped: boolean, transitionSeconds = 0): void {
+    this.model.setEyeBlinkStopped?.(stopped, transitionSeconds);
+  }
+
   applyPresentation(presentation: StoryCharacterPresentation): void {
     this.frame.angleX = presentation.angle;
     this.frame.bodyAngleX = presentation.bodyAngle;
