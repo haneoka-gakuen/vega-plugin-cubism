@@ -230,6 +230,7 @@ export const createCubismWebGlModel = async (
     model = await AdvCubismModel.create({
       gl: context.gl,
       modelUrl: context.descriptor.modelSource,
+      textureVariants: context.descriptor.textureVariants,
       signal: context.signal,
       ...(context.descriptor.defaultMotionName ? { defaultMotionName: context.descriptor.defaultMotionName } : {}),
       maskBufferSize: context.descriptor.maskBufferSize ?? 1024,

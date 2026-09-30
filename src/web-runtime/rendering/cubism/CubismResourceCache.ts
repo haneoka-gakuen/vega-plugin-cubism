@@ -1,6 +1,9 @@
 /* Copyright 2026 Haneoka Gakuen contributors. MPL-2.0 licensed. */
 interface ArrayBufferCacheEntry {
   pending: Promise<ArrayBuffer>;
+  readonly controller: AbortController;
+  waiters: number;
+  settled: boolean;
   byteLength: number | null;
 }
 
@@ -234,8 +237,8 @@ function abortError(url: string): Error {
   return error;
 }
 
-async function fetchArrayBuffer(url: string): Promise<ArrayBuffer> {
-  const response = await fetch(url);
+async function fetchArrayBuffer(url: string, signal: AbortSignal): Promise<ArrayBuffer> {
+  const response = await fetch(url, { signal });
   return assertResponse(response, url).arrayBuffer();
 }
 
@@ -289,12 +292,19 @@ export function fetchCachedArrayBuffer(url: string, signal?: AbortSignal): Promi
   if (!entry) {
     entry = {
       pending: Promise.resolve(new ArrayBuffer(0)),
+      controller: new AbortController(),
+      waiters: 0,
+      settled: false,
       byteLength: null,
     };
     const created = entry;
-    created.pending = fetchArrayBuffer(url)
-      .then((buffer) => retainFulfilledArrayBuffer(url, created, buffer))
+    created.pending = fetchArrayBuffer(url, created.controller.signal)
+      .then((buffer) => {
+        created.settled = true;
+        return retainFulfilledArrayBuffer(url, created, buffer);
+      })
       .catch((error: unknown) => {
+        created.settled = true;
         deleteArrayBufferEntry(url, created);
         throw error;
       });
@@ -302,7 +312,11 @@ export function fetchCachedArrayBuffer(url: string, signal?: AbortSignal): Promi
   } else {
     touchArrayBuffer(url, entry);
   }
-  return waitForCachedResource(entry.pending, signal, url).then((buffer) => buffer.slice(0));
+  const current = entry;
+  return waitForOwnedResource(current, signal, url, () => {
+    deleteArrayBufferEntry(url, current);
+    current.controller.abort();
+  }).then((buffer) => buffer.slice(0));
 }
 
 export function loadCachedImage(url: string, signal?: AbortSignal): Promise<TexImageSource> {
@@ -400,15 +414,18 @@ interface ResolverImageCacheEntry {
   byteLength: number | null;
 }
 
-function waitForResolverImage(
-  entry: ResolverImageCacheEntry,
+function waitForOwnedResource<T>(
+  entry: { pending: Promise<T>; waiters: number; settled: boolean },
   signal: AbortSignal | undefined,
   url: string,
   onIdle: () => void,
-): Promise<TexImageSource> {
-  if (signal?.aborted) return Promise.reject(abortError(url));
+): Promise<T> {
+  if (signal?.aborted) {
+    if (!entry.settled && entry.waiters === 0) onIdle();
+    return Promise.reject(abortError(url));
+  }
   entry.waiters += 1;
-  return new Promise<TexImageSource>((resolve, reject) => {
+  return new Promise<T>((resolve, reject) => {
     let settled = false;
     const finish = (callback: () => void): void => {
       if (settled) return;
@@ -510,7 +527,7 @@ export function cubismResourceLoaderFor(resources: CubismStoryResourceResolver):
       touchResolverImage(url, entry);
     }
     const current = entry;
-    return waitForResolverImage(current, signal, url, () => {
+    return waitForOwnedResource(current, signal, url, () => {
       deleteResolverImage(url, current);
       current.controller.abort();
     });

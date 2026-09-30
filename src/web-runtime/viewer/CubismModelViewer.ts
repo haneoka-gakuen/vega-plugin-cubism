@@ -19,6 +19,7 @@ import {
   resolveCubismOrthographicCaptureMatrix,
   type CubismModelViewerOrthographicCapture,
 } from "./CubismCaptureProjection";
+import { normalizeCubismTextureVariants, type CubismTextureVariant } from "../../runtime/CubismTextureVariant";
 
 const DEFAULT_TARGET_FRAME_RATE = 60;
 const VISIBLE_MODEL_FILL = 0.93;
@@ -29,6 +30,7 @@ const FALLBACK_FOCUS_ANCHOR_HEIGHT_RATIO = 0.75;
 
 export interface CubismModelViewerLoadOptions {
   readonly modelUrl: string;
+  readonly textureVariants?: readonly CubismTextureVariant[];
   readonly harmonicMotion?: AdvHarmonicMotionData | null;
   readonly defaultMotionName?: string;
   /**
@@ -202,7 +204,10 @@ export class CubismModelViewer {
     if (this.destroyed) throw new Error("A destroyed Cubism model viewer cannot load a model");
     if (options.signal?.aborted) throw abortError(options.modelUrl);
     const generation = ++this.loadGeneration;
-    this.loadOptions = options;
+    this.loadOptions = {
+      ...options,
+      ...(options.textureVariants ? { textureVariants: normalizeCubismTextureVariants(options.textureVariants) } : {}),
+    };
     this.autoIdleMotion = options.autoIdleMotion ?? true;
     this.renderFaulted = false;
     this.releaseModel();
@@ -213,6 +218,7 @@ export class CubismModelViewer {
     const model = await AdvCubismModel.create({
       gl: this.gl,
       modelUrl: options.modelUrl,
+      textureVariants: this.loadOptions.textureVariants,
       defaultMotionName: options.defaultMotionName,
       maskBufferSize: options.maskBufferSize,
       anisotropy: options.anisotropy,

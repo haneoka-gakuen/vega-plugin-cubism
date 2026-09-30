@@ -44,6 +44,7 @@ export class CubismShader_WebGL {
     if (!state) {
       state = {
         samplerUnitsInitialized: false,
+        textureFlipY: null,
         drawRendererToken: null,
         drawGenerationToken: -1,
         lightingToken: null,
@@ -271,6 +272,11 @@ export class CubismShader_WebGL {
 
     // テクスチャ設定
     const textureNo: number = model.getDrawableTextureIndex(index);
+    const textureFlipY = renderer.getTextureFlipY(textureNo) ? 1 : 0;
+    if (uploadState.textureFlipY !== textureFlipY) {
+      this.gl.uniform1f(shaderSet.uniformTextureFlipYLocation, textureFlipY);
+      uploadState.textureFlipY = textureFlipY;
+    }
     const textureId: WebGLTexture = renderer
       .getBindedTextures()
       .getValue(textureNo);
@@ -482,6 +488,11 @@ export class CubismShader_WebGL {
 
     //テクスチャ設定
     const textureNo: number = model.getDrawableTextureIndex(index);
+    const textureFlipY = renderer.getTextureFlipY(textureNo) ? 1 : 0;
+    if (uploadState.textureFlipY !== textureFlipY) {
+      this.gl.uniform1f(shaderSet.uniformTextureFlipYLocation, textureFlipY);
+      uploadState.textureFlipY = textureFlipY;
+    }
     const textureId: WebGLTexture = renderer
       .getBindedTextures()
       .getValue(textureNo);
@@ -617,6 +628,11 @@ export class CubismShader_WebGL {
     this._shaderSets.at(7).shaderProgram = this._shaderSets.at(1).shaderProgram;
     this._shaderSets.at(8).shaderProgram = this._shaderSets.at(2).shaderProgram;
     this._shaderSets.at(9).shaderProgram = this._shaderSets.at(3).shaderProgram;
+
+    for (let index = 0; index < ShaderCount; index++) {
+      const set = this._shaderSets.at(index);
+      set.uniformTextureFlipYLocation = this.gl.getUniformLocation(set.shaderProgram, 'u_textureFlipY');
+    }
 
     // SetupMask
     this._shaderSets.at(0).attributePositionLocation =
@@ -1301,6 +1317,7 @@ export class CubismShader_WebGL {
 
 interface UnityAdvProgramUploadState {
   samplerUnitsInitialized: boolean;
+  textureFlipY: number | null;
   drawRendererToken: CubismRenderer_WebGL | null;
   drawGenerationToken: number;
   lightingToken: unknown;
@@ -1441,6 +1458,7 @@ export class CubismShaderSet {
   shaderProgram: WebGLProgram; // シェーダープログラムのアドレス
   attributePositionLocation: GLuint; // シェーダープログラムに渡す変数のアドレス（Position）
   attributeTexCoordLocation: GLuint; // シェーダープログラムに渡す変数のアドレス（TexCoord）
+  uniformTextureFlipYLocation: WebGLUniformLocation;
   uniformMatrixLocation: WebGLUniformLocation; // シェーダープログラムに渡す変数のアドレス（Matrix）
   uniformClipMatrixLocation: WebGLUniformLocation; // シェーダープログラムに渡す変数のアドレス（ClipMatrix）
   samplerTexture0Location: WebGLUniformLocation; // シェーダープログラムに渡す変数のアドレス（Texture0）
@@ -1500,12 +1518,13 @@ export const vertexShaderSrcSetupMask =
   'varying vec2       v_texCoord;' +
   'varying vec4       v_myPos;' +
   'uniform mat4       u_clipMatrix;' +
+  'uniform float      u_textureFlipY;' +
   'void main()' +
   '{' +
   '   gl_Position = u_clipMatrix * a_position;' +
   '   v_myPos = u_clipMatrix * a_position;' +
   '   v_texCoord = a_texCoord;' +
-  '   v_texCoord.y = 1.0 - v_texCoord.y;' +
+  '   v_texCoord.y = mix(1.0 - a_texCoord.y, a_texCoord.y, u_textureFlipY);' +
   '}';
 
 export const fragmentShaderSrcsetupMask =
@@ -1536,6 +1555,7 @@ export const vertexShaderSrc = `
   varying vec4 v_screenPos;
   varying vec3 v_vertexLightColor;
   varying vec3 v_vertexLightDirection;
+  uniform float u_textureFlipY;
   uniform mat4 u_matrix;
   uniform mat4 u_objectToWorld;
   uniform float u_additionalLightCount;
@@ -1547,7 +1567,7 @@ export const vertexShaderSrc = `
     vec4 clipPosition = u_matrix * a_position;
     vec4 worldPosition = u_objectToWorld * a_position;
     gl_Position = clipPosition;
-    v_texCoord = vec2(a_texCoord.x, 1.0 - a_texCoord.y);
+    v_texCoord = vec2(a_texCoord.x, mix(1.0 - a_texCoord.y, a_texCoord.y, u_textureFlipY));
     // The packaged shader uses the object-to-world 3x3 directly, not an
     // inverse-transpose normal matrix.
     v_worldNormal = normalize(mat3(u_objectToWorld) * a_normal.xyz);
@@ -1600,6 +1620,7 @@ export const vertexShaderSrcMasked = `
   varying vec3 v_vertexLightColor;
   varying vec3 v_vertexLightDirection;
   varying vec4 v_clipPos;
+  uniform float u_textureFlipY;
   uniform mat4 u_matrix;
   uniform mat4 u_objectToWorld;
   uniform mat4 u_clipMatrix;
@@ -1613,7 +1634,7 @@ export const vertexShaderSrcMasked = `
     vec4 worldPosition = u_objectToWorld * a_position;
     gl_Position = clipPosition;
     v_clipPos = u_clipMatrix * a_position;
-    v_texCoord = vec2(a_texCoord.x, 1.0 - a_texCoord.y);
+    v_texCoord = vec2(a_texCoord.x, mix(1.0 - a_texCoord.y, a_texCoord.y, u_textureFlipY));
     v_worldNormal = normalize(mat3(u_objectToWorld) * a_normal.xyz);
     vec3 accumulatedColor = vec3(0.0);
     vec3 accumulatedDirection = vec3(0.0);

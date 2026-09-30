@@ -1,3 +1,5 @@
+import { normalizeCubismTextureVariants, type CubismTextureVariant } from "./runtime/CubismTextureVariant.js";
+export type { CubismTextureVariant } from "./runtime/CubismTextureVariant.js";
 import {
   defineVegaPlugin,
   type StoryCharacterModel,
@@ -44,6 +46,8 @@ export interface CubismModelDescriptor {
   /** Explicit low-level MOC/MOC3 source supplied by a portable descriptor. */
   readonly mocSource?: string;
   readonly textures?: readonly string[];
+  /** Model3-family compressed alternatives; ordinary texture slots remain the fallback. */
+  readonly textureVariants?: readonly CubismTextureVariant[];
   readonly physicsSource?: string;
   readonly poseSource?: string;
   readonly userDataSource?: string;
@@ -530,7 +534,7 @@ const projectModel3Manifest = (
 
   add(field(references, "Moc", "moc"), "Cubism model");
   for (const texture of strings(field(references, "Textures", "textures"))) {
-    add(texture, "Cubism texture", "texture");
+    add(texture, "Cubism texture", /\.ktx2(?:[?#]|$)/iu.test(texture) ? undefined : "texture");
   }
   if (includePhysics) {
     add(field(references, "Physics", "physics"), "Cubism physics");
@@ -842,6 +846,7 @@ export const describeCubismModel = (entry: StoryCharacterModelContext["entry"]):
     : Array.isArray(source.textures)
       ? source.textures
       : [];
+  const textureVariants = normalizeCubismTextureVariants(runtime.textureVariants ?? source.textureVariants);
   const physicsSource = firstString(runtime.physics, source.physics);
   const poseSource = firstString(runtime.pose, source.pose);
   const userDataSource = firstString(runtime.userData, runtime.userdata, source.userData, source.userdata);
@@ -875,6 +880,7 @@ export const describeCubismModel = (entry: StoryCharacterModelContext["entry"]):
           textures: textureValues.map((value) => (typeof value === "string" ? value.trim() : "")),
         }
       : {}),
+    ...(version === 3 && textureVariants.length ? { textureVariants } : {}),
     ...(physicsSource ? { physicsSource } : {}),
     ...(poseSource ? { poseSource } : {}),
     ...(userDataSource ? { userDataSource } : {}),

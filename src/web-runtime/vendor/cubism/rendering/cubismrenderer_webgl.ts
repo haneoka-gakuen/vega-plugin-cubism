@@ -661,8 +661,13 @@ export class CubismRenderer_WebGL extends CubismRenderer {
    * @param modelTextureNo セットするモデルテクスチャの番号
    * @param glTextureNo WebGLテクスチャの番号
    */
-  public bindTexture(modelTextureNo: number, glTexture: WebGLTexture): void {
+  public bindTexture(modelTextureNo: number, glTexture: WebGLTexture, flipY = false): void {
     this._textures.setValue(modelTextureNo, glTexture);
+    this._textureFlipY.set(modelTextureNo, flipY);
+  }
+
+  public getTextureFlipY(modelTextureNo: number): boolean {
+    return this._textureFlipY.get(modelTextureNo) ?? false;
   }
 
   /**
@@ -780,6 +785,7 @@ export class CubismRenderer_WebGL extends CubismRenderer {
     this.clearDrawableBuffers();
     this._bufferData = null;
     this._textures = null;
+    this._textureFlipY.clear();
 
     const shaderContext = this._shaderContext;
     this._shader = null;
@@ -1141,6 +1147,7 @@ export class CubismRenderer_WebGL extends CubismRenderer {
     buffers.vertexRevision.length = 0;
   }
 
+  private readonly _textureFlipY = new Map<number, boolean>();
   _textures: csmMap<number, WebGLTexture>; // モデルが参照するテクスチャとレンダラでバインドしているテクスチャとのマップ
   _sortedDrawableIndexList: csmVector<number>; // 描画オブジェクトのインデックスを描画順に並べたリスト
   _clippingManager: CubismClippingManager_WebGL; // クリッピングマスク管理オブジェクト

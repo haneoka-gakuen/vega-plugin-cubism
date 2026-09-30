@@ -37,6 +37,9 @@ import {
   type UnityCubismMultiplyTextureParameters,
 } from "./UnityCubismAdvLighting";
 
+import { createCubismTexture } from "./CubismTexture";
+import { normalizeCubismTextureVariants, type CubismTextureVariant } from "../../../runtime/CubismTextureVariant";
+
 const MOTION_PRIORITY_FORCE = 3;
 
 export interface CubismParameterFrame {
@@ -88,6 +91,8 @@ export interface CubismDrawableBounds {
 export interface AdvCubismModelOptions {
   gl: WebGL2RenderingContext;
   modelUrl: string;
+  /** Explicit compressed alternatives; the model manifest retains its PNG slots. */
+  textureVariants?: readonly CubismTextureVariant[];
   /** Cancels browser-side resource waits when this character load loses ownership. */
   signal?: AbortSignal;
   /** Live2DCharacter.DefaultMotionName; its finite clip is restarted by the controller. */
@@ -127,46 +132,6 @@ function resolveResourceUrl(baseUrl: string, resource: string): string {
 function fileStem(path: string): string {
   const file = path.split("/").pop() || path;
   return file.replace(/\.(?:motion3|exp3)\.json$/i, "");
-}
-
-function createTexture(gl: WebGL2RenderingContext, image: TexImageSource, anisotropy: number): WebGLTexture {
-  const texture = gl.createTexture();
-  if (!texture) throw new Error("Unable to allocate a Cubism texture");
-  gl.bindTexture(gl.TEXTURE_2D, texture);
-  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 0);
-  gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
-  gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
-  gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
-  // PlayerSettings.m_ActiveColorSpace=Gamma. Unity samples the imported
-  // Live2D RGBA8 bytes without hardware sRGB decoding, then the ADV fragment
-  // program premultiplies after lighting/multiply-texture evaluation.
-  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, image);
-  const extension = gl.getExtension("EXT_texture_filter_anisotropic") as {
-    TEXTURE_MAX_ANISOTROPY_EXT: number;
-    MAX_TEXTURE_MAX_ANISOTROPY_EXT: number;
-  } | null;
-  if (extension && anisotropy > 1) {
-    const maximum = Number(gl.getParameter(extension.MAX_TEXTURE_MAX_ANISOTROPY_EXT)) || 1;
-    gl.texParameterf(gl.TEXTURE_2D, extension.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(maximum, anisotropy));
-  }
-  gl.bindTexture(gl.TEXTURE_2D, null);
-  return texture;
-}
-
-async function createCubismTexture(
-  gl: WebGL2RenderingContext,
-  url: string,
-  anisotropy: number,
-  resources: CubismModelResourceLoader,
-  signal?: AbortSignal,
-): Promise<WebGLTexture> {
-  const image = await resources.loadImage(url, signal);
-  return createTexture(gl, image, anisotropy);
 }
 
 function createWhiteTexture(gl: WebGL2RenderingContext): WebGLTexture {
@@ -324,6 +289,10 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
   private async initialize(options: AdvCubismModelOptions): Promise<void> {
     const settingBuffer = await this.resourceLoader.loadArrayBuffer(this.modelUrl, this.resourceSignal);
     this.setting = new CubismModelSettingJson(settingBuffer, settingBuffer.byteLength);
+    const manifest = JSON.parse(new TextDecoder().decode(settingBuffer));
+    const textureVariants =
+      options.textureVariants ??
+      normalizeCubismTextureVariants(manifest.TextureVariants ?? manifest.FileReferences?.TextureVariants);
     const mocUrl = resolveResourceUrl(this.modelUrl, this.setting.getModelFileName());
     this.loadModel(await this.resourceLoader.loadArrayBuffer(mocUrl, this.resourceSignal), false);
     if (!this._model) throw new Error(`Cubism model could not be created from ${mocUrl}`);
@@ -375,7 +344,15 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
       if (!resource) continue;
       const url = resolveResourceUrl(this.modelUrl, resource);
       textureLoads.push(
-        createCubismTexture(this.gl, url, anisotropy, this.resourceLoader, this.resourceSignal).then((texture) => {
+        createCubismTexture(
+          this.gl,
+          url,
+          anisotropy,
+          this.resourceLoader,
+          this.resourceSignal,
+          textureVariants.filter((variant) => variant.textureIndex === index),
+          this.modelUrl,
+        ).then(({ texture, flipY }) => {
           // Promise.all rejects as soon as one resource fails. Creation then
           // releases the partially built model while sibling requests may
           // still resolve; never bind into that released renderer, and release
@@ -385,7 +362,7 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
             return;
           }
           this.textures.push(texture);
-          renderer.bindTexture(index, texture);
+          renderer.bindTexture(index, texture, flipY);
         }),
       );
     }
@@ -1330,7 +1307,11 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
 
   async loadUnityMultiplyTexture(url: string, options: AdvCubismMultiplyTextureOptions = {}): Promise<void> {
     const generation = this.resourceGeneration;
-    const texture = await createCubismTexture(this.gl, url, 1, this.resourceLoader, this.resourceSignal);
+    const { texture, flipY } = await createCubismTexture(this.gl, url, 1, this.resourceLoader, this.resourceSignal);
+    if (flipY) {
+      this.gl.deleteTexture(texture);
+      throw new Error("Multiply textures require top-left texture orientation");
+    }
     // createCubismTexture allocates before this async caller regains control, so
     // release the texture if the model was torn down while it was loading.
     if (this.released || generation !== this.resourceGeneration) {
