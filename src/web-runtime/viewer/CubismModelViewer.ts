@@ -23,10 +23,16 @@ import { normalizeCubismTextureVariants, type CubismTextureVariant } from "../..
 
 const DEFAULT_TARGET_FRAME_RATE = 60;
 const VISIBLE_MODEL_FILL = 0.93;
-const FOCUS_EPSILON = 0.01;
 const FOCUS_MAX_SPEED = 40 / 7.5;
-const FOCUS_ACCELERATION_TIME = 1 / (0.15 * 1000);
+const FOCUS_TIME_CONSTANT = 0.15;
+const FOCUS_SETTLE_DISTANCE = 1e-5;
 const FALLBACK_FOCUS_ANCHOR_HEIGHT_RATIO = 0.75;
+
+interface CubismViewerParameterDefault {
+  readonly defaultValue: number;
+  readonly minimum: number;
+  readonly maximum: number;
+}
 
 export interface CubismModelViewerLoadOptions {
   readonly modelUrl: string;
@@ -115,12 +121,14 @@ export class CubismModelViewer {
   private loadOptions: CubismModelViewerLoadOptions | null = null;
   private currentModelBounds: CubismDrawableBounds | null = null;
   private parameterOverrides: Readonly<Record<string, number>> = {};
+  private effectiveParameterOverrides: Readonly<Record<string, number>> = {};
+  private readonly viewerParameterDefaults = new Map<string, CubismViewerParameterDefault>();
+  private eyeBlinkParameterIds: readonly string[] = [];
+  private standardBreathParameterId: string | null = null;
   private focusTargetX = 0;
   private focusTargetY = 0;
   private focusX = 0;
   private focusY = 0;
-  private focusVelocityX = 0;
-  private focusVelocityY = 0;
   private loopMotionName = "";
   private width = 1;
   private height = 1;
@@ -233,6 +241,7 @@ export class CubismModelViewer {
     }
 
     this.model = model;
+    this.cacheViewerChannelDefaults(model);
     model.setDefaultMotionRestartSuppressed(!this.autoIdleMotion);
     this.playback.apply(model);
     model.setEyeBlinkEnabled(this.eyeBlinkEnabled);
@@ -243,6 +252,7 @@ export class CubismModelViewer {
     if (this.autoIdleMotion && options.defaultMotionName) model.playMotion(options.defaultMotionName);
     if (options.defaultExpressionName) model.playExpression(options.defaultExpressionName);
     model.primeInitialFrame({
+      overrides: this.effectiveParameterOverrides,
       blends: this.breathEnabled ? this.harmonicMotion.current(model) : [],
     });
     this.currentModelBounds = model.drawableBounds(true) ?? model.drawableBounds(false) ?? model.canvasBounds();
@@ -313,12 +323,14 @@ export class CubismModelViewer {
 
   setBreathEnabled(enabled: boolean): void {
     this.breathEnabled = Boolean(enabled);
+    this.refreshEffectiveParameterOverrides();
     this.evaluateWithoutAdvancing();
   }
 
   setEyeBlinkEnabled(enabled: boolean): void {
     this.eyeBlinkEnabled = Boolean(enabled);
     this.model?.setEyeBlinkEnabled(this.eyeBlinkEnabled);
+    this.refreshEffectiveParameterOverrides();
     this.evaluateWithoutAdvancing();
   }
 
@@ -353,6 +365,7 @@ export class CubismModelViewer {
 
   setParameterOverrides(values: Readonly<Record<string, number>>): void {
     this.parameterOverrides = { ...values };
+    this.refreshEffectiveParameterOverrides();
     this.evaluateWithoutAdvancing();
   }
 
@@ -475,6 +488,7 @@ export class CubismModelViewer {
       // A pose override is an absolute late write. Remove it for this scoped
       // request so the authored motion can actually reach the renderer.
       this.parameterOverrides = {};
+      this.refreshEffectiveParameterOverrides();
       this.loopMotionName = "";
       this.model?.setDefaultMotionRestartSuppressed(true);
     }
@@ -603,6 +617,7 @@ export class CubismModelViewer {
   private updateModel(deltaSeconds: number): void {
     const model = this.model;
     if (!model) return;
+    const overrides = this.effectiveParameterOverrides;
     for (const step of cubismPlaybackSteps(deltaSeconds, this.playback.rate)) {
       // A pose is a temporal snapshot. Do not let physics, Cubism pose fades,
       // blink, or any other model-owned clock move while it is displayed.
@@ -611,7 +626,7 @@ export class CubismModelViewer {
       model.update(effectiveStep, {
         focusX: this.focusX,
         focusY: this.focusY,
-        overrides: this.parameterOverrides,
+        overrides,
         blends,
       });
     }
@@ -624,50 +639,46 @@ export class CubismModelViewer {
     model.update(0, {
       focusX: this.focusX,
       focusY: this.focusY,
-      overrides: this.parameterOverrides,
+      overrides: this.effectiveParameterOverrides,
       blends,
     });
     this.render();
     this.onFrame?.();
   }
 
-  /** Port of Cubism's focus controller acceleration and braking curve. */
+  /** Analytic monotone smoothing with the existing focus speed and elapsed cap. */
   private advanceFocus(elapsedSeconds: number): boolean {
     const beforeX = this.focusX;
     const beforeY = this.focusY;
+    const elapsed = Math.max(0, Math.min(0.1, finite(elapsedSeconds)));
+    if (elapsed === 0) return false;
     const dx = this.focusTargetX - this.focusX;
     const dy = this.focusTargetY - this.focusY;
-    if (Math.abs(dx) < FOCUS_EPSILON && Math.abs(dy) < FOCUS_EPSILON) {
+    const distance = Math.hypot(dx, dy);
+    if (distance === 0) return false;
+
+    const threshold = FOCUS_MAX_SPEED * FOCUS_TIME_CONSTANT;
+    const linearTime = (distance - threshold) / FOCUS_MAX_SPEED;
+    let remainingDistance =
+      distance <= threshold
+        ? distance * Math.exp(-elapsed / FOCUS_TIME_CONSTANT)
+        : elapsed <= linearTime
+          ? distance - FOCUS_MAX_SPEED * elapsed
+          : threshold * Math.exp(-(elapsed - linearTime) / FOCUS_TIME_CONSTANT);
+    // Finish the subpixel tail so skipped model-clock frames stop evaluating
+    // an already settled focus. Retain the speed bound for tiny time steps.
+    if (remainingDistance <= FOCUS_SETTLE_DISTANCE) {
+      remainingDistance = Math.max(0, distance - FOCUS_MAX_SPEED * elapsed);
+    }
+    if (remainingDistance === 0) {
       this.focusX = this.focusTargetX;
       this.focusY = this.focusTargetY;
-      this.focusVelocityX = 0;
-      this.focusVelocityY = 0;
       return beforeX !== this.focusX || beforeY !== this.focusY;
     }
-
-    const milliseconds = Math.max(1, Math.min(100, elapsedSeconds * 1000));
-    const distance = Math.sqrt(dx ** 2 + dy ** 2);
-    const maximumSpeed = FOCUS_MAX_SPEED / (1000 / milliseconds);
-    let accelerationX = maximumSpeed * (dx / distance) - this.focusVelocityX;
-    let accelerationY = maximumSpeed * (dy / distance) - this.focusVelocityY;
-    const acceleration = Math.sqrt(accelerationX ** 2 + accelerationY ** 2);
-    const maximumAcceleration = maximumSpeed * FOCUS_ACCELERATION_TIME * milliseconds;
-    if (acceleration > maximumAcceleration) {
-      accelerationX *= maximumAcceleration / acceleration;
-      accelerationY *= maximumAcceleration / acceleration;
-    }
-
-    this.focusVelocityX += accelerationX;
-    this.focusVelocityY += accelerationY;
-    const speed = Math.sqrt(this.focusVelocityX ** 2 + this.focusVelocityY ** 2);
-    const brakingSpeed =
-      0.5 * (Math.sqrt(maximumAcceleration ** 2 + 8 * maximumAcceleration * distance) - maximumAcceleration);
-    if (speed > brakingSpeed) {
-      this.focusVelocityX *= brakingSpeed / speed;
-      this.focusVelocityY *= brakingSpeed / speed;
-    }
-    this.focusX += this.focusVelocityX;
-    this.focusY += this.focusVelocityY;
+    const displacement = Math.max(0, Math.min(distance, distance - remainingDistance));
+    const fraction = displacement / distance;
+    this.focusX = beforeX + dx * fraction;
+    this.focusY = beforeY + dy * fraction;
     return beforeX !== this.focusX || beforeY !== this.focusY;
   }
 
@@ -745,7 +756,45 @@ export class CubismModelViewer {
     this.model = null;
     this.currentModelBounds = null;
     this.parameterOverrides = {};
+    this.effectiveParameterOverrides = {};
+    this.viewerParameterDefaults.clear();
+    this.eyeBlinkParameterIds = [];
+    this.standardBreathParameterId = null;
     this.oneShotMotionPreview = null;
+  }
+
+  private cacheViewerChannelDefaults(model: AdvCubismModel): void {
+    const metadata = model.viewerChannelMetadata();
+    this.eyeBlinkParameterIds = metadata.eyeBlinkParameterIds;
+    this.standardBreathParameterId = metadata.standardBreathParameterId;
+    this.viewerParameterDefaults.clear();
+    const relevantIds = new Set(this.eyeBlinkParameterIds);
+    if (this.standardBreathParameterId) relevantIds.add(this.standardBreathParameterId);
+    for (const parameter of model.parameterValues()) {
+      if (!relevantIds.has(parameter.id)) continue;
+      const minimum = Math.min(parameter.minimum, parameter.maximum);
+      const maximum = Math.max(parameter.minimum, parameter.maximum);
+      const defaultValue = Math.max(minimum, Math.min(maximum, finite(parameter.defaultValue, minimum)));
+      this.viewerParameterDefaults.set(parameter.id, { defaultValue, minimum, maximum });
+    }
+    this.refreshEffectiveParameterOverrides();
+  }
+
+  private refreshEffectiveParameterOverrides(): void {
+    const disabled: Record<string, number> = {};
+    if (!this.eyeBlinkEnabled) {
+      for (const id of this.eyeBlinkParameterIds) {
+        const parameter = this.viewerParameterDefaults.get(id);
+        if (parameter) disabled[id] = parameter.defaultValue;
+      }
+    }
+    if (!this.breathEnabled && this.standardBreathParameterId) {
+      const parameter = this.viewerParameterDefaults.get(this.standardBreathParameterId);
+      if (parameter) disabled[this.standardBreathParameterId] = parameter.defaultValue;
+    }
+    this.effectiveParameterOverrides = Object.keys(disabled).length
+      ? { ...disabled, ...this.parameterOverrides }
+      : this.parameterOverrides;
   }
 
   private acquireShaderContext(): void {

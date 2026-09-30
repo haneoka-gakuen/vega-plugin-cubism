@@ -75,6 +75,11 @@ export interface CubismParameterValue {
   readonly defaultValue: number;
 }
 
+export interface AdvCubismViewerChannelMetadata {
+  readonly eyeBlinkParameterIds: readonly string[];
+  readonly standardBreathParameterId: string | null;
+}
+
 export interface CubismPartValue {
   readonly index: number;
   readonly id: string;
@@ -198,6 +203,7 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
   private readonly eyeBallYId: CubismIdHandle;
   private readonly mouthOpenYId: CubismIdHandle;
   private readonly mouthFormId: CubismIdHandle;
+  private readonly standardBreathId: CubismIdHandle;
   private readonly physicsEnabled: boolean;
   private readonly breathEnabled: boolean;
   private readonly defaultMotionName: string;
@@ -259,6 +265,7 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     this.eyeBallYId = ids.getId(CubismDefaultParameterId.ParamEyeBallY);
     this.mouthOpenYId = ids.getId(CubismDefaultParameterId.ParamMouthOpenY);
     this.mouthFormId = ids.getId(CubismDefaultParameterId.ParamMouthForm);
+    this.standardBreathId = ids.getId(CubismDefaultParameterId.ParamBreath);
   }
 
   static async create(options: AdvCubismModelOptions): Promise<AdvCubismModel> {
@@ -654,6 +661,24 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
       });
     }
     return values;
+  }
+
+  viewerChannelMetadata(): AdvCubismViewerChannelMetadata {
+    const eyeBlinkParameterIds: string[] = [];
+    const seen = new Set<string>();
+    for (let index = 0; index < this.eyeBlinkIds.getSize(); index += 1) {
+      const parameterIndex = this.realParameterIndex(this.eyeBlinkIds.at(index));
+      if (parameterIndex == null) continue;
+      const id = this._model.getParameterId(parameterIndex).getString().s;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      eyeBlinkParameterIds.push(id);
+    }
+    const breathIndex = this.realParameterIndex(this.standardBreathId);
+    return {
+      eyeBlinkParameterIds,
+      standardBreathParameterId: breathIndex == null ? null : this._model.getParameterId(breathIndex).getString().s,
+    };
   }
 
   partValues(): CubismPartValue[] {
