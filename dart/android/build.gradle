@@ -1,0 +1,11 @@
+group = "org.vega.cubism"
+version = "0.1.0"
+
+apply plugin: "com.android.library"
+
+android {
+    namespace = "org.vega.cubism"
+    compileSdk = 36
+    defaultConfig { minSdk = 24 }
+    sourceSets { main { jniLibs.srcDirs = ["../.local/cubism_core/android"] } }
+}

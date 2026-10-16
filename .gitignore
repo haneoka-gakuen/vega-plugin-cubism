@@ -8,3 +8,6 @@ coverage/
 dist/
 node_modules/
 .dependencies/
+
+native/motion-sync/build*/
+native/motion-sync/target/

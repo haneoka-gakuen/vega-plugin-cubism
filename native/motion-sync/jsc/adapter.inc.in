@@ -1,0 +1,1 @@
+static const char* kAdapter = R"MOTION_SYNC(@MOTION_SYNC_ADAPTER@)MOTION_SYNC";

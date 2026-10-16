@@ -1,0 +1,35 @@
+cmake_minimum_required(VERSION 3.10)
+project(vega_plugin_cubism LANGUAGES CXX)
+
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+  set(CUBISM_ARCH arm64)
+else()
+  set(CUBISM_ARCH x64)
+endif()
+
+set(CUBISM_CORE_LIBRARY "$ENV{CUBISM_CORE_LIBRARY}")
+if(NOT CUBISM_CORE_LIBRARY)
+  set(CUBISM_CORE_LIBRARY
+    "${CMAKE_CURRENT_SOURCE_DIR}/../.local/cubism_core/linux/${CUBISM_ARCH}/libLive2DCubismCore.so")
+endif()
+if(EXISTS "${CUBISM_CORE_LIBRARY}")
+  set(vega_plugin_cubism_bundled_libraries "${CUBISM_CORE_LIBRARY}" PARENT_SCOPE)
+else()
+  set(vega_plugin_cubism_bundled_libraries "" PARENT_SCOPE)
+endif()
+
+# The optional MotionSync runtime is loaded only through motion_sync.dart.
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+  pkg_check_modules(CUBISM_MOTION_SYNC_JSC QUIET javascriptcoregtk-4.1)
+  if(CUBISM_MOTION_SYNC_JSC_FOUND)
+    get_filename_component(CUBISM_PROVIDER_LINUX_ROOT "${CMAKE_CURRENT_SOURCE_DIR}" REALPATH)
+    add_subdirectory("${CUBISM_PROVIDER_LINUX_ROOT}/../../native/motion-sync/jsc"
+      "${CMAKE_CURRENT_BINARY_DIR}/motion_sync")
+    set(CUBISM_MOTION_SYNC_BUNDLED "$<TARGET_FILE:cubism_motion_sync>")
+    if(EXISTS "${CUBISM_CORE_LIBRARY}")
+      list(PREPEND CUBISM_MOTION_SYNC_BUNDLED "${CUBISM_CORE_LIBRARY}")
+    endif()
+    set(vega_plugin_cubism_bundled_libraries ${CUBISM_MOTION_SYNC_BUNDLED} PARENT_SCOPE)
+  endif()
+endif()
