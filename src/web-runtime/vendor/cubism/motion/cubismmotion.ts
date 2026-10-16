@@ -202,7 +202,7 @@ function inverseSteppedEvaluate(
   return points[1].value;
 }
 
-function evaluateCurve(
+export function evaluateCurve(
   motionData: CubismMotionData,
   index: number,
   time: number,

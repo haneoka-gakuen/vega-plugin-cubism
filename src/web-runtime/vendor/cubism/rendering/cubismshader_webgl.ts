@@ -61,6 +61,8 @@ export class CubismShader_WebGL {
    */
   public release(): void {
     this.releaseShaderProgram();
+    this.gl?.canvas?.removeEventListener('webglcontextlost', this._handleContextLost);
+    this.gl = null;
   }
 
   /** Upload each drawable once per evaluated model revision. */
@@ -583,12 +585,16 @@ export class CubismShader_WebGL {
    * シェーダープログラムを解放する
    */
   public releaseShaderProgram(): void {
+    const programs = new Set<WebGLProgram>();
     for (let i = 0; i < this._shaderSets.getSize(); i++) {
-      this.gl.deleteProgram(this._shaderSets.at(i).shaderProgram);
-      this._shaderSets.at(i).shaderProgram = 0;
-      this._shaderSets.set(i, void 0);
-      this._shaderSets.set(i, null);
+      const program = this._shaderSets.at(i)?.shaderProgram;
+      if (program) programs.add(program);
     }
+    if (!this._gpuContextInvalidated && this.gl && !this.gl.isContextLost()) {
+      for (const program of programs) this.gl.deleteProgram(program);
+    }
+    this._shaderSets.clear();
+    this._unityAdvProgramUploadStates = new WeakMap();
   }
 
   /**
@@ -1301,14 +1307,28 @@ export class CubismShader_WebGL {
   }
 
   public setGl(gl: WebGLRenderingContext): void {
+    this.gl?.canvas?.removeEventListener('webglcontextlost', this._handleContextLost);
     this.gl = gl;
+    this.gl.canvas?.addEventListener('webglcontextlost', this._handleContextLost);
   }
+
+  public get isContextInvalidated(): boolean {
+    return this._gpuContextInvalidated;
+  }
+
+  private _gpuContextInvalidated = false;
+  private readonly _handleContextLost = (): void => {
+    this._gpuContextInvalidated = true;
+    // Programs are already reclaimed by context loss; release their CPU-side
+    // upload state immediately, even while old model owners await recovery.
+    this.release();
+  };
 
   _shaderSets: csmVector<CubismShaderSet>; // ロードしたシェーダープログラムを保持する変数
   private _baseColor: CubismTextureColor;
   private _multiplyColor: CubismTextureColor;
   private _screenColor: CubismTextureColor;
-  private readonly _unityAdvProgramUploadStates = new WeakMap<
+  private _unityAdvProgramUploadStates = new WeakMap<
     WebGLProgram,
     UnityAdvProgramUploadState
   >();
@@ -1392,7 +1412,7 @@ export class CubismShaderManager_WebGL {
    */
   public acquireGlContext(gl: WebGLRenderingContext): CubismShader_WebGL {
     let entry = this._shaderMap.get(gl);
-    if (!entry) {
+    if (!entry || entry.shader.isContextInvalidated) {
       const shader = new CubismShader_WebGL();
       shader.setGl(gl);
       entry = { shader, owners: 0 };
@@ -1407,9 +1427,11 @@ export class CubismShaderManager_WebGL {
    * 最後の所有者が解放した時だけShaderプログラムを破棄する。
    * @param gl
    */
-  public releaseGlContext(gl: WebGLRenderingContext): void {
+  public releaseGlContext(gl: WebGLRenderingContext, shader?: CubismShader_WebGL): void {
     const entry = this._shaderMap.get(gl);
-    if (!entry) return;
+    // The same GL object survives restoration. A late old owner must not
+    // decrement the replacement generation's shader ownership.
+    if (!entry || (shader && entry.shader !== shader)) return;
 
     entry.owners -= 1;
     if (entry.owners > 0) return;
@@ -1445,10 +1467,11 @@ export function acquireCubismShaderContext(
  * GLContextに対応する共有Cubism Shaderへの所有権を解放する。
  */
 export function releaseCubismShaderContext(
-  gl: WebGLRenderingContext
+  gl: WebGLRenderingContext,
+  shader?: CubismShader_WebGL
 ): void {
   // 解放だけで空のマネージャーを再生成しない。
-  s_instance?.releaseGlContext(gl);
+  s_instance?.releaseGlContext(gl, shader);
 }
 
 /**

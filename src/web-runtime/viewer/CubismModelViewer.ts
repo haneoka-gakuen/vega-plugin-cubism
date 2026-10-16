@@ -19,6 +19,7 @@ import {
   resolveCubismOrthographicCaptureMatrix,
   type CubismModelViewerOrthographicCapture,
 } from "./CubismCaptureProjection";
+import { createOwnedAbortSignal, type OwnedAbortSignal } from "../rendering/cubism/CubismResourceCache";
 import { normalizeCubismTextureVariants, type CubismTextureVariant } from "../../runtime/CubismTextureVariant";
 
 const DEFAULT_TARGET_FRAME_RATE = 60;
@@ -37,6 +38,7 @@ interface CubismViewerParameterDefault {
 export interface CubismModelViewerLoadOptions {
   readonly modelUrl: string;
   readonly textureVariants?: readonly CubismTextureVariant[];
+  readonly allowLossyTextureVariants?: boolean;
   readonly harmonicMotion?: AdvHarmonicMotionData | null;
   readonly defaultMotionName?: string;
   /**
@@ -120,6 +122,7 @@ export class CubismModelViewer {
   private model: AdvCubismModel | null = null;
   private loadOptions: CubismModelViewerLoadOptions | null = null;
   private currentModelBounds: CubismDrawableBounds | null = null;
+  private readonly partOpacityOverrides = new Map<string, number>();
   private parameterOverrides: Readonly<Record<string, number>> = {};
   private effectiveParameterOverrides: Readonly<Record<string, number>> = {};
   private readonly viewerParameterDefaults = new Map<string, CubismViewerParameterDefault>();
@@ -142,16 +145,26 @@ export class CubismModelViewer {
   private readonly playback = new CubismViewerPlaybackState();
   private paused = false;
   private contextLost = false;
-  private shaderContextAcquired = false;
+  private shaderContext: ReturnType<typeof acquireCubismShaderContext> | null = null;
   private renderFaulted = false;
   private destroyed = false;
   private animationFrame = 0;
   private previousFrameTime = 0;
   private loadGeneration = 0;
+  private loadAbort: OwnedAbortSignal | null = null;
   private oneShotMotionPreview: {
     readonly loopMotionName: string;
   } | null = null;
   private autoIdleMotion = true;
+  private recoveryState: {
+    readonly parameters: Readonly<Record<string, number>>;
+    readonly parts: readonly CubismPartValue[];
+    readonly loopMotionName: string;
+    readonly pose: {
+      readonly parameters: readonly CubismParameterValue[];
+      readonly parts: readonly CubismPartValue[];
+    } | null;
+  } | null = null;
 
   constructor(options: CubismModelViewerOptions) {
     this.canvas = options.canvas;
@@ -212,6 +225,10 @@ export class CubismModelViewer {
     if (this.destroyed) throw new Error("A destroyed Cubism model viewer cannot load a model");
     if (options.signal?.aborted) throw abortError(options.modelUrl);
     const generation = ++this.loadGeneration;
+    this.loadAbort?.abort();
+    const loadAbort = createOwnedAbortSignal(options.signal);
+    this.loadAbort = loadAbort;
+    this.recoveryState = null;
     this.loadOptions = {
       ...options,
       ...(options.textureVariants ? { textureVariants: normalizeCubismTextureVariants(options.textureVariants) } : {}),
@@ -227,13 +244,14 @@ export class CubismModelViewer {
       gl: this.gl,
       modelUrl: options.modelUrl,
       textureVariants: this.loadOptions.textureVariants,
+      allowLossyTextureVariants: options.allowLossyTextureVariants === true,
       defaultMotionName: options.defaultMotionName,
       maskBufferSize: options.maskBufferSize,
       anisotropy: options.anisotropy,
       physics: options.physics ?? true,
       breath: false,
       lighting: options.lighting ?? DEFAULT_UNITY_CUBISM_LIGHTING,
-      signal: options.signal,
+      signal: loadAbort.signal,
     });
     if (this.destroyed || generation !== this.loadGeneration || this.contextLost || options.signal?.aborted) {
       model.release();
@@ -246,7 +264,7 @@ export class CubismModelViewer {
     this.playback.apply(model);
     model.setEyeBlinkEnabled(this.eyeBlinkEnabled);
     model.setMotionClockFrozen(this.poseFrozen);
-    model.setAnimationTimeFrozen(this.poseFrozen);
+    model.setAnimationTimeFrozen(this.poseFrozen || this.paused);
     model.setPaused(this.paused);
     this.harmonicMotion.setPaused(this.paused || this.poseFrozen);
     if (this.autoIdleMotion && options.defaultMotionName) model.playMotion(options.defaultMotionName);
@@ -262,7 +280,10 @@ export class CubismModelViewer {
 
   unload(): void {
     this.loadGeneration += 1;
+    this.loadAbort?.abort();
+    this.loadAbort = null;
     this.loadOptions = null;
+    this.recoveryState = null;
     this.releaseModel();
     this.clear();
   }
@@ -293,13 +314,15 @@ export class CubismModelViewer {
     if (this.paused === next) return;
     this.paused = next;
     if (next) {
+      this.model?.setAnimationTimeFrozen(true);
       this.model?.setPaused(true);
       this.harmonicMotion.setPaused(true);
     } else {
       // Native Resume restarts harmonic channel zero before expression reset
       // and dispatch of the pause-time motion/expression slots.
-      this.harmonicMotion.setPaused(false);
+      if (!this.poseFrozen) this.harmonicMotion.setPaused(false);
       this.model?.setPaused(false);
+      this.model?.setAnimationTimeFrozen(this.poseFrozen);
     }
     this.frameClock.reset();
     this.previousFrameTime = performance.now();
@@ -345,7 +368,7 @@ export class CubismModelViewer {
     this.poseFrozen = next;
     this.harmonicMotion.setPaused(next || this.paused);
     this.model?.setMotionClockFrozen(next);
-    this.model?.setAnimationTimeFrozen(next);
+    this.model?.setAnimationTimeFrozen(next || this.paused);
     if (!next) {
       this.frameClock.reset();
       this.previousFrameTime = performance.now();
@@ -423,6 +446,8 @@ export class CubismModelViewer {
   setPartOpacity(id: string, opacity: number): void {
     if (!this.model || this.contextLost || this.renderFaulted) return;
     try {
+      if (!Number.isFinite(opacity) || !this.parts().some((part) => part.id === id)) return;
+      this.partOpacityOverrides.set(id, Math.max(0, Math.min(1, opacity)));
       this.model.setPartOpacity(id, opacity);
       // Part opacities only propagate to drawable opacities inside a core
       // model update, so re-evaluate instead of just redrawing.
@@ -595,6 +620,9 @@ export class CubismModelViewer {
     if (this.destroyed) return;
     this.destroyed = true;
     this.loadGeneration += 1;
+    this.loadAbort?.abort();
+    this.loadAbort = null;
+    this.recoveryState = null;
     if (this.animationFrame) cancelAnimationFrame(this.animationFrame);
     this.animationFrame = 0;
     this.canvas.removeEventListener("webglcontextlost", this.handleContextLost, false);
@@ -756,6 +784,7 @@ export class CubismModelViewer {
     this.model = null;
     this.currentModelBounds = null;
     this.parameterOverrides = {};
+    this.partOpacityOverrides.clear();
     this.effectiveParameterOverrides = {};
     this.viewerParameterDefaults.clear();
     this.eyeBlinkParameterIds = [];
@@ -798,22 +827,29 @@ export class CubismModelViewer {
   }
 
   private acquireShaderContext(): void {
-    if (this.shaderContextAcquired) return;
-    acquireCubismShaderContext(this.gl);
-    this.shaderContextAcquired = true;
+    if (this.shaderContext && !this.shaderContext.isContextInvalidated) return;
+    this.shaderContext = acquireCubismShaderContext(this.gl);
   }
 
   private releaseShaderContext(): void {
-    if (!this.shaderContextAcquired) return;
-    releaseCubismShaderContext(this.gl);
-    this.shaderContextAcquired = false;
+    if (!this.shaderContext) return;
+    releaseCubismShaderContext(this.gl, this.shaderContext);
+    this.shaderContext = null;
   }
 
   private readonly handleContextLost = (event: Event): void => {
     event.preventDefault();
+    this.recoveryState = {
+      parameters: { ...this.parameterOverrides },
+      parts: this.parts().filter((part) => this.partOpacityOverrides.has(part.id)),
+      loopMotionName: this.loopMotionName,
+      pose: this.poseFrozen || this.paused ? { parameters: this.parameters(), parts: this.parts() } : null,
+    };
     this.contextLost = true;
     this.renderFaulted = false;
     this.loadGeneration += 1;
+    this.loadAbort?.abort();
+    this.loadAbort = null;
     this.releaseModel();
     this.releaseShaderContext();
     this.frameClock.reset();
@@ -829,8 +865,27 @@ export class CubismModelViewer {
     this.frameClock.reset();
     const options = this.loadOptions;
     if (!options) return;
-    void this.load(options)
-      .then(() => this.onContextRestoredCallback?.())
-      .catch((error: unknown) => this.onError?.(error));
+    const recovery = this.recoveryState;
+    this.recoveryState = null;
+    const loading = this.load(options);
+    const generation = this.loadGeneration;
+    void loading
+      .then(() => {
+        if (this.destroyed || this.contextLost || generation !== this.loadGeneration) return;
+        if (recovery && this.model) {
+          if ((this.poseFrozen || this.paused) && recovery.pose) this.model.setAnimationTimeFrozen(true, recovery.pose);
+          this.setParameterOverrides(recovery.parameters);
+          for (const part of recovery.parts) {
+            this.partOpacityOverrides.set(part.id, part.opacity);
+            this.model.setPartOpacity(part.id, part.opacity);
+          }
+          this.setLoopMotion(recovery.loopMotionName);
+          this.evaluateWithoutAdvancing();
+        }
+        this.onContextRestoredCallback?.();
+      })
+      .catch((error: unknown) => {
+        if (!this.destroyed && generation === this.loadGeneration) this.onError?.(error);
+      });
   };
 }

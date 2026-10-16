@@ -109,6 +109,10 @@ interface Live2DStaticC2 {
   setGL(gl: WebGLRenderingContext, bufferIndex?: number): void;
   deleteBuffer?(bufferIndex: number): void;
   dispose?(): void;
+  /** Legacy SDK context-slot storage cleared by deleteBuffer/dispose. */
+  glContext?: WebGLRenderingContext[];
+  frameBuffers?: unknown[];
+  fTexture?: WebGLTexture[];
 }
 
 interface Live2DModelWebGLStaticC2 {
@@ -156,6 +160,7 @@ interface Cubism2ContextLease {
   readonly gl: WebGL2RenderingContext;
   readonly id: number;
   references: number;
+  invalidated: boolean;
 }
 
 const cubism2ContextLeases = new WeakMap<WebGL2RenderingContext, Cubism2ContextLease>();
@@ -171,8 +176,8 @@ let nextCubism2ContextId = 0;
  */
 const acquireCubism2Context = (sdk: Cubism2RuntimeC2, gl: WebGL2RenderingContext): Cubism2ContextLease => {
   let lease = cubism2ContextLeases.get(gl);
-  if (!lease) {
-    lease = { gl, id: nextCubism2ContextId++, references: 0 };
+  if (!lease || lease.invalidated) {
+    lease = { gl, id: nextCubism2ContextId++, references: 0, invalidated: false };
     cubism2ContextLeases.set(gl, lease);
   }
   lease.references += 1;
@@ -186,9 +191,17 @@ const releaseCubism2Context = (sdk: Cubism2RuntimeC2, lease: Cubism2ContextLease
   lease.references -= 1;
   cubism2ContextLeaseCount = Math.max(0, cubism2ContextLeaseCount - 1);
   if (lease.references === 0) {
-    cubism2ContextLeases.delete(lease.gl);
+    if (cubism2ContextLeases.get(lease.gl) === lease) cubism2ContextLeases.delete(lease.gl);
     try {
-      sdk.Live2D.deleteBuffer?.(lease.id);
+      if (lease.invalidated || lease.gl.isContextLost()) {
+        // deleteBuffer also submits deleteFramebuffer. Loss already reclaimed
+        // it; drop the legacy slot references without touching old GPU handles.
+        delete sdk.Live2D.frameBuffers?.[lease.id];
+        delete sdk.Live2D.glContext?.[lease.id];
+        delete sdk.Live2D.fTexture?.[lease.id];
+      } else {
+        sdk.Live2D.deleteBuffer?.(lease.id);
+      }
     } catch {
       // Models without a clipping context may not have allocated this slot.
     }
@@ -376,7 +389,13 @@ export class Cubism2Model implements StoryCharacterModel {
   }
 
   get isOperational(): boolean {
-    return !this.released && this.initialized && Boolean(this.liveModel);
+    return (
+      !this.released &&
+      this.initialized &&
+      Boolean(this.liveModel) &&
+      !this.gpuContextInvalidated &&
+      !this.gl.isContextLost()
+    );
   }
 
   get updateSerial(): number {
@@ -395,6 +414,7 @@ export class Cubism2Model implements StoryCharacterModel {
   private readonly resourceAbort: OwnedAbortSignal;
   private readonly resourceSignal: AbortSignal;
   private readonly resourceLoader: CubismModelResourceLoader;
+  private readonly releaseResourceLoader?: () => void;
   private glContextLease: Cubism2ContextLease | null = null;
   private liveModel: Live2DModelWebGLC2 | null = null;
   private motionManager: MotionQueueManagerC2 | null = null;
@@ -434,6 +454,12 @@ export class Cubism2Model implements StoryCharacterModel {
   private updateSerialValue = 0;
   private drawSerialValue = 0;
   private released = false;
+  private gpuContextInvalidated = false;
+  private readonly handleContextLost = (): void => {
+    this.gpuContextInvalidated = true;
+    if (this.glContextLease) this.glContextLease.invalidated = true;
+    this.resourceAbort.abort();
+  };
   private initialized = false;
   private pixelsPerUnitValue: number;
   private readonly hasExplicitPixelsPerUnit: boolean;
@@ -441,9 +467,11 @@ export class Cubism2Model implements StoryCharacterModel {
 
   private constructor(options: Cubism2ModelOptions) {
     this.gl = options.gl;
+    this.gl.canvas?.addEventListener("webglcontextlost", this.handleContextLost);
     this.resourceAbort = createOwnedAbortSignal(options.signal);
     this.resourceSignal = this.resourceAbort.signal;
     this.resourceLoader = options.resourceLoader ?? cachedCubismModelResourceLoader;
+    this.releaseResourceLoader = this.resourceLoader.retain?.();
     this.modelUrl = options.mocUrl;
     const pixelsPerUnit = finiteNumber(options.pixelsPerUnit, Number.NaN);
     this.hasExplicitPixelsPerUnit = Number.isFinite(pixelsPerUnit) && pixelsPerUnit > 0;
@@ -1053,7 +1081,7 @@ export class Cubism2Model implements StoryCharacterModel {
 
   update(deltaSeconds: number, frame: CubismParameterFrame): void {
     const model = this.liveModel;
-    if (!model || this.released) return;
+    if (!model || !this.isOperational) return;
     this.retryRequestedResources();
     if (this.paused) {
       // Manual pose edits still refresh drawables while autonomous clocks and
@@ -1137,7 +1165,7 @@ export class Cubism2Model implements StoryCharacterModel {
     color: readonly [number, number, number, number],
     _drawState?: AdvCubismDrawState,
   ): void {
-    if (!this.initialized || !this.liveModel || this.released) return;
+    if (!this.isOperational || !this.liveModel) return;
     const gl = this.gl;
     const sdk = live2d();
     const contextId = this.glContextLease?.id;
@@ -1193,25 +1221,48 @@ export class Cubism2Model implements StoryCharacterModel {
   release(): void {
     if (this.released) return;
     this.released = true;
-    this.resourceAbort.abort();
-    this.resourceGeneration += 1;
-    this.motionManager?.stopAllMotions();
-    this.expressionManager?.stopAllMotions();
-    for (const texture of this.textures) this.gl.deleteTexture(texture);
-    this.textures.length = 0;
-    this.motionCache.clear();
-    this.expressionCache.clear();
-    this.loadingMotions.clear();
-    this.loadingExpressions.clear();
-    this.motionRetries.clear();
-    this.expressionRetries.clear();
-    this.physicsHairs = [];
-    this.motionManager = null;
-    this.expressionManager = null;
-    this.liveModel = null;
-    this.initialized = false;
-    const lease = this.glContextLease;
-    this.glContextLease = null;
-    if (lease) releaseCubism2Context(live2d(), lease);
+    const errors: unknown[] = [];
+    const cleanup = (action: () => void): void => {
+      try {
+        action();
+      } catch (error) {
+        errors.push(error);
+      }
+    };
+    try {
+      cleanup(() => this.gl.canvas?.removeEventListener("webglcontextlost", this.handleContextLost));
+      cleanup(() => this.resourceAbort.abort());
+      this.resourceGeneration += 1;
+      cleanup(() => this.motionManager?.stopAllMotions());
+      cleanup(() => this.expressionManager?.stopAllMotions());
+      if (!this.gpuContextInvalidated && !this.gl.isContextLost()) {
+        for (const texture of this.textures) cleanup(() => this.gl.deleteTexture(texture));
+      }
+      this.textures.length = 0;
+      this.motionCache.clear();
+      this.expressionCache.clear();
+      this.loadingMotions.clear();
+      this.loadingExpressions.clear();
+      this.motionRetries.clear();
+      this.expressionRetries.clear();
+    } catch (error) {
+      errors.push(error);
+    } finally {
+      cleanup(() => {
+        this.physicsHairs = [];
+        this.motionManager = null;
+        this.expressionManager = null;
+        this.liveModel = null;
+        this.initialized = false;
+      });
+      cleanup(() => {
+        const lease = this.glContextLease;
+        this.glContextLease = null;
+        if (lease) releaseCubism2Context(live2d(), lease);
+      });
+      cleanup(() => this.releaseResourceLoader?.());
+    }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) throw new AggregateError(errors, "Cubism 2 model release failed");
   }
 }

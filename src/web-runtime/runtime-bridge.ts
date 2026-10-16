@@ -11,6 +11,7 @@ export {
   type CubismPartValue,
 } from "./rendering/cubism/AdvCubismModel";
 export type { CubismTextureVariant } from "../runtime/CubismTextureVariant";
+export { supportsCubismTextureVariant, type CubismTextureSelectionOptions } from "./rendering/cubism/CubismTexture";
 export type { AdvCubismMotionPositionOptions } from "./rendering/cubism/AdvCubismMotionPosition";
 export { AdvHarmonicMotionController, type AdvHarmonicMotionData } from "./rendering/cubism/AdvHarmonicMotion";
 export {

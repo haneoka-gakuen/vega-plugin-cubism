@@ -6,6 +6,10 @@ export class PausedCubismRequest<T> {
     this.pending = request;
   }
 
+  peek(): T | null {
+    return this.pending;
+  }
+
   take(): T | null {
     const request = this.pending;
     this.pending = null;

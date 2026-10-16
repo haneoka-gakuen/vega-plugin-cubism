@@ -42,6 +42,18 @@ export interface OwnedAbortSignal {
 export interface CubismModelResourceLoader {
   loadArrayBuffer(url: string, signal?: AbortSignal): Promise<ArrayBuffer>;
   loadImage(url: string, signal?: AbortSignal): Promise<TexImageSource>;
+  /** Keep resolver-local decoded images while this model owns the loader. */
+  retain?(): () => void;
+  retainOptionalBytes?(
+    source: string,
+    options: { readonly signal?: AbortSignal; readonly expiresAt: number },
+  ): Promise<CubismOptionalBytesLease>;
+}
+
+export interface CubismOptionalBytesLease {
+  readonly source: string;
+  readonly bytes: Readonly<Uint8Array>;
+  release(): void;
 }
 
 /** Structural subset of Vega's resource resolver used by the web runtime. */
@@ -50,6 +62,10 @@ export interface CubismStoryResourceResolver {
   load(source: string, signal?: AbortSignal): Promise<Uint8Array>;
   /** Trusted immutable fast path introduced by Vega 0.1. */
   loadSharedBytes?(source: string, signal?: AbortSignal): Promise<Readonly<Uint8Array>>;
+  retainOptionalBytes?(
+    source: string,
+    options: { readonly signal?: AbortSignal; readonly expiresAt: number },
+  ): Promise<CubismOptionalBytesLease>;
 }
 
 /**
@@ -457,6 +473,8 @@ export function cubismResourceLoaderFor(resources: CubismStoryResourceResolver):
 
   const images = new Map<string, ResolverImageCacheEntry>();
   let imageBytes = 0;
+  let owners = 0;
+  let imageWaiters = 0;
   const touchResolverImage = (url: string, entry: ResolverImageCacheEntry): void => {
     if (images.get(url) !== entry) return;
     images.delete(url);
@@ -478,6 +496,13 @@ export function cubismResourceLoaderFor(resources: CubismStoryResourceResolver):
         break;
       }
       if (!removed) return;
+    }
+  };
+  const clearIdleImages = (): void => {
+    if (owners > 0 || imageWaiters > 0) return;
+    for (const [url, entry] of images) {
+      deleteResolverImage(url, entry);
+      if (!entry.settled) entry.controller.abort();
     }
   };
   const loadBuffer = (url: string, signal?: AbortSignal): Promise<ArrayBuffer> => {
@@ -527,15 +552,35 @@ export function cubismResourceLoaderFor(resources: CubismStoryResourceResolver):
       touchResolverImage(url, entry);
     }
     const current = entry;
+    imageWaiters += 1;
     return waitForOwnedResource(current, signal, url, () => {
       deleteResolverImage(url, current);
       current.controller.abort();
+    }).finally(() => {
+      imageWaiters -= 1;
+      clearIdleImages();
     });
   };
 
   const loader: CubismModelResourceLoader = {
     loadArrayBuffer: loadBuffer,
     loadImage: loadDecodedImage,
+    ...(resources.retainOptionalBytes
+      ? {
+          retainOptionalBytes: (url: string, options: { readonly signal?: AbortSignal; readonly expiresAt: number }) =>
+            resources.retainOptionalBytes!(url, options),
+        }
+      : {}),
+    retain() {
+      owners += 1;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        owners -= 1;
+        clearIdleImages();
+      };
+    },
   };
   resolverLoaders.set(owner, loader);
   return loader;

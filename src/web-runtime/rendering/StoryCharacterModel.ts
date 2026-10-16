@@ -1,6 +1,7 @@
 import type { Matrix4Like } from "./math/Matrix4";
 import type { AdvCubismDrawState, CubismDrawableBounds, CubismParameterFrame } from "./cubism/AdvCubismModel";
 import type { AdvMotionSyncCoreStatus } from "./cubism/AdvMotionSyncCore";
+import type { CubismParameterLoopTimeline } from "./cubism/AdvCubismParameterLoop";
 
 /**
  * Render-backend contract for every world-space story character.
@@ -23,6 +24,7 @@ export interface StoryCharacterModel {
   readonly motionSyncStatus: AdvMotionSyncCoreStatus | "unconfigured";
 
   setPaused(paused: boolean): void;
+  clearPausedRequests?(): void;
   setMotionSpeed(speed: number): void;
   setEyeBlinkEnabled(enabled: boolean): void;
   resetExpressionParametersToDefault(): void;
@@ -40,6 +42,9 @@ export interface StoryCharacterModel {
   playParameterLoopMotion?(name: string, fadeInSeconds?: number): boolean;
   /** Ends a parameter loop, easing its parameters home over the clip's fade-out. */
   stopParameterLoopMotion?(fadeSeconds?: number): void;
+  createSnapshot?(): unknown;
+  restoreSnapshot?(snapshot: unknown): void | Promise<void>;
+  restoreParameterLoopTimeline?(timeline: CubismParameterLoopTimeline): void | Promise<void>;
   /** Opcode 69: stop/resume auto eye blink, easing the lids over `transitionSeconds`. */
   setEyeBlinkStopped?(stopped: boolean, transitionSeconds?: number): void;
   prepareMotion(name: string): Promise<boolean>;

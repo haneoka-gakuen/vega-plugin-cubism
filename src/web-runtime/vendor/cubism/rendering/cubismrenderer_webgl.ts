@@ -160,9 +160,9 @@ export class CubismClippingManager_WebGL extends CubismClippingManager<CubismCli
     super(CubismClippingContext_WebGL);
   }
 
-  public override release(): void {
+  public override release(deleteGpuResources = true): void {
     // The base manager owns clip metadata; this subclass owns the GPU atlas.
-    if (this.gl) {
+    if (deleteGpuResources && this.gl && !this.gl.isContextLost?.()) {
       for (let i = 0; i < (this._maskRenderTextures?.getSize() ?? 0); i++) {
         this.gl.deleteFramebuffer(this._maskRenderTextures.at(i));
       }
@@ -174,6 +174,7 @@ export class CubismClippingManager_WebGL extends CubismClippingManager<CubismCli
     this._maskColorBuffers = null;
     this._maskTexture = null;
     this._currentMaskRenderTexture = null;
+    this.gl = null;
     super.release();
   }
 
@@ -776,23 +777,33 @@ export class CubismRenderer_WebGL extends CubismRenderer {
    * デストラクタ相当の処理
    */
   public release(): void {
+    const deleteGpuResources = !this._gpuContextInvalidated && !this.gl?.isContextLost();
+    this.gl?.canvas?.removeEventListener('webglcontextlost', this._handleContextLost);
     if (this._clippingManager) {
-      this._clippingManager.release();
+      this._clippingManager.release(deleteGpuResources);
       this._clippingManager = void 0;
       this._clippingManager = null;
     }
 
-    this.clearDrawableBuffers();
+    this.clearDrawableBuffers(deleteGpuResources);
     this._bufferData = null;
     this._textures = null;
     this._textureFlipY.clear();
 
     const shaderContext = this._shaderContext;
+    const shader = this._shader;
     this._shader = null;
     this._shaderContext = null;
     if (shaderContext != null) {
-      releaseCubismShaderContext(shaderContext);
+      releaseCubismShaderContext(shaderContext, shader);
     }
+    this._clippingContextBufferForMask = null;
+    this._clippingContextBufferForDraw = null;
+    this._rendererProfile = null;
+    this._sortedDrawableIndexList.clear();
+    this._unityAdvMultiplyTexture = null;
+    this._model = null;
+    this._extension = null;
     this.gl = null;
   }
 
@@ -1111,12 +1122,14 @@ export class CubismRenderer_WebGL extends CubismRenderer {
       // switching so the next draw lazily uploads into the new context.
       this.clearDrawableBuffers();
       if (this._shaderContext != null) {
-        releaseCubismShaderContext(this._shaderContext);
+        releaseCubismShaderContext(this._shaderContext, this._shader);
       }
       this._shader = acquireCubismShaderContext(gl);
       this._shaderContext = gl;
     }
+    this.gl?.canvas?.removeEventListener('webglcontextlost', this._handleContextLost);
     this.gl = gl;
+    this.gl.canvas?.addEventListener('webglcontextlost', this._handleContextLost);
 
     if (this._clippingManager) {
       this._clippingManager.setGL(gl);
@@ -1131,11 +1144,11 @@ export class CubismRenderer_WebGL extends CubismRenderer {
       this.gl.getExtension('MOZ_EXT_texture_filter_anisotropic');
   }
 
-  private clearDrawableBuffers(): void {
+  private clearDrawableBuffers(deleteGpuResources = !this._gpuContextInvalidated): void {
     const buffers = this._bufferData;
     if (buffers == null) return;
     const gl = this.gl;
-    if (gl != null) {
+    if (deleteGpuResources && gl != null && !gl.isContextLost()) {
       for (const buffer of buffers.vertex) gl.deleteBuffer(buffer);
       for (const buffer of buffers.uv) gl.deleteBuffer(buffer);
       for (const buffer of buffers.index) gl.deleteBuffer(buffer);
@@ -1148,6 +1161,10 @@ export class CubismRenderer_WebGL extends CubismRenderer {
   }
 
   private readonly _textureFlipY = new Map<number, boolean>();
+  private _gpuContextInvalidated = false;
+  private readonly _handleContextLost = (): void => {
+    this._gpuContextInvalidated = true;
+  };
   _textures: csmMap<number, WebGLTexture>; // モデルが参照するテクスチャとレンダラでバインドしているテクスチャとのマップ
   _sortedDrawableIndexList: csmVector<number>; // 描画オブジェクトのインデックスを描画順に並べたリスト
   _clippingManager: CubismClippingManager_WebGL; // クリッピングマスク管理オブジェクト

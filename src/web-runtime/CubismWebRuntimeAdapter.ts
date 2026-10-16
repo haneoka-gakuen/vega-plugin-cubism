@@ -34,6 +34,7 @@ export interface CreateCubismWebRuntimeAdapterOptions {
   readonly resourceCache?: CubismResourceCacheOptions;
   readonly createCanvas?: () => HTMLCanvasElement;
   readonly targetFrameRate?: number;
+  readonly allowLossyTextureVariants?: boolean;
 }
 
 const abortReason = (signal: AbortSignal): unknown =>
@@ -124,7 +125,7 @@ const resolveCubism2Source = async (
       if (!entry || typeof entry !== "object") continue;
       const value = entry as { name?: unknown; file?: unknown };
       const url = resolveResource(descriptor.modelSource, value.file);
-      const name = String(value.name ?? "").trim() || fileStem(url);
+      const name = String(value.name ?? "") || fileStem(url);
       if (name && url) expressions.push({ name, url });
     }
   }
@@ -142,36 +143,46 @@ const resolveCubism2Source = async (
 
 interface ShaderLease {
   references: number;
+  readonly shader: ReturnType<typeof acquireCubismShaderContext>;
 }
 
 const shaderLeases = new WeakMap<WebGL2RenderingContext, ShaderLease>();
 
 const acquireShaderLease = (gl: WebGL2RenderingContext): (() => void) => {
   let lease = shaderLeases.get(gl);
-  if (!lease) {
-    acquireCubismShaderContext(gl);
-    lease = { references: 0 };
+  if (!lease || lease.shader.isContextInvalidated) {
+    lease = { references: 0, shader: acquireCubismShaderContext(gl) };
     shaderLeases.set(gl, lease);
   }
   lease.references += 1;
+  const acquired = lease;
   let released = false;
   return () => {
     if (released) return;
     released = true;
-    const current = shaderLeases.get(gl);
-    if (!current) return;
-    current.references -= 1;
-    if (current.references > 0) return;
-    shaderLeases.delete(gl);
-    releaseCubismShaderContext(gl);
+    acquired.references -= 1;
+    if (acquired.references > 0) return;
+    if (shaderLeases.get(gl) === acquired) shaderLeases.delete(gl);
+    releaseCubismShaderContext(gl, acquired.shader);
   };
 };
 
 const ownRelease = (model: RuntimeModel, releaseContext?: () => void): RuntimeModel => {
   const original = model.release.bind(model);
+  // Translate renderer capabilities at the SDK adapter boundary. Renderers
+  // use the same names without depending on Unity/Cubism implementation APIs.
+  const rendererProfile =
+    model instanceof AdvCubismModel
+      ? {
+          setRendererLighting: model.setUnityLighting.bind(model),
+          loadRendererMultiplyTexture: model.loadUnityMultiplyTexture.bind(model),
+          clearRendererMultiplyTexture: model.clearUnityMultiplyTexture.bind(model),
+        }
+      : null;
   let released = false;
   return new Proxy(model, {
     get(target, property) {
+      if (rendererProfile && Object.hasOwn(rendererProfile, property)) return Reflect.get(rendererProfile, property);
       if (property === "release" || property === "dispose") {
         return () => {
           if (released) return;
@@ -194,6 +205,7 @@ export const createCubismWebGlModel = async (
     readonly descriptor: CubismModelDescriptor;
     readonly gl: WebGL2RenderingContext;
     readonly rendererContext?: unknown;
+    readonly allowLossyTextureVariants?: boolean;
   },
 ): Promise<RuntimeModel> => {
   throwIfAborted(context.signal);
@@ -231,6 +243,7 @@ export const createCubismWebGlModel = async (
       gl: context.gl,
       modelUrl: context.descriptor.modelSource,
       textureVariants: context.descriptor.textureVariants,
+      allowLossyTextureVariants: context.allowLossyTextureVariants === true,
       signal: context.signal,
       ...(context.descriptor.defaultMotionName ? { defaultMotionName: context.descriptor.defaultMotionName } : {}),
       maskBufferSize: context.descriptor.maskBufferSize ?? 1024,
@@ -475,6 +488,7 @@ class CanvasCubismStoryModel implements StoryCharacterModel {
   private disposed = false;
   private selectedMotionName = "";
   private selectedExpressionName = "";
+  private readonly resizeObserver: ResizeObserver | null;
 
   private constructor(
     private readonly pool: CanvasCubismRenderPool,
@@ -496,6 +510,15 @@ class CanvasCubismStoryModel implements StoryCharacterModel {
     this.resize();
     model.primeInitialFrame(this.frame);
     model.setPaused(true);
+    this.resizeObserver =
+      typeof ResizeObserver === "function"
+        ? new ResizeObserver(() => {
+            if (this.disposed || !this.isOperational) return;
+            this.resize();
+            this.draw();
+          })
+        : null;
+    this.resizeObserver?.observe(canvas);
   }
 
   static async create(
@@ -508,7 +531,11 @@ class CanvasCubismStoryModel implements StoryCharacterModel {
     const lease = pool.acquire();
     let model: RuntimeModel | undefined;
     try {
-      model = await createCubismWebGlModel({ ...context, gl: lease.gl });
+      model = await createCubismWebGlModel({
+        ...context,
+        gl: lease.gl,
+        allowLossyTextureVariants: options.allowLossyTextureVariants === true,
+      });
       return new CanvasCubismStoryModel(
         pool,
         lease.gl,
@@ -531,7 +558,7 @@ class CanvasCubismStoryModel implements StoryCharacterModel {
   }
 
   get isOperational(): boolean {
-    return !this.disposed && this.model.isOperational;
+    return !this.disposed && !this.gl.isContextLost() && this.model.isOperational;
   }
 
   setPaused(paused: boolean): void {
@@ -573,28 +600,45 @@ class CanvasCubismStoryModel implements StoryCharacterModel {
   }
 
   playMotion(name: string, fadeInSeconds?: number): boolean {
-    this.selectedMotionName = name.trim();
+    this.selectedMotionName = name;
     return this.model.playMotion(name, fadeInSeconds);
   }
 
   /** Restore an authored motion after host transport seek/retry. */
   playMotionAt(name: string, positionSeconds: number, fadeInSeconds?: number, options?: { loop?: boolean }): boolean {
-    this.selectedMotionName = name.trim();
+    this.selectedMotionName = name;
     return this.model.playMotionAt(name, positionSeconds, fadeInSeconds, options);
   }
 
   playExpression(name: string, fadeInSeconds?: number): boolean {
-    this.selectedExpressionName = name.trim();
+    this.selectedExpressionName = name;
     return this.model.playExpression(name, fadeInSeconds);
   }
 
   playParameterLoopMotion(name: string, fadeInSeconds?: number): boolean {
-    this.selectedMotionName = name.trim();
     return this.model.playParameterLoopMotion?.(name, fadeInSeconds) ?? false;
   }
 
   stopParameterLoopMotion(fadeSeconds?: number): void {
     this.model.stopParameterLoopMotion?.(fadeSeconds);
+  }
+
+  createSnapshot(): unknown {
+    return "createSnapshot" in this.model ? this.model.createSnapshot() : undefined;
+  }
+
+  clearPausedRequests(): void {
+    if ("clearPausedRequests" in this.model) this.model.clearPausedRequests();
+  }
+
+  restoreSnapshot(snapshot: unknown): void | Promise<void> {
+    if ("restoreSnapshot" in this.model) return this.model.restoreSnapshot(snapshot);
+  }
+
+  restoreParameterLoopTimeline(
+    timeline: import("./rendering/cubism/AdvCubismParameterLoop").CubismParameterLoopTimeline,
+  ): void | Promise<void> {
+    if ("restoreParameterLoopTimeline" in this.model) return this.model.restoreParameterLoopTimeline(timeline);
   }
 
   setEyeBlinkStopped(stopped: boolean, transitionSeconds = 0): void {
@@ -609,8 +653,8 @@ class CanvasCubismStoryModel implements StoryCharacterModel {
     this.element.style.opacity = String(Math.max(0, Math.min(1, finite(presentation.alpha, 1))));
     this.setPaused(presentation.paused);
     this.setPlaybackSpeed(presentation.playbackSpeed);
-    const motionName = presentation.motionName.trim();
-    const expressionName = presentation.expressionName.trim();
+    const motionName = presentation.motionName;
+    const expressionName = presentation.expressionName;
     if (motionName && motionName !== this.selectedMotionName) this.playMotion(motionName);
     else if (!motionName) this.selectedMotionName = "";
     if (expressionName && expressionName !== this.selectedExpressionName) {
@@ -627,6 +671,7 @@ class CanvasCubismStoryModel implements StoryCharacterModel {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.resizeObserver?.disconnect();
     if (this.frameHandle !== null) cancelFrame(this.frameHandle);
     this.frameHandle = null;
     try {
@@ -638,7 +683,7 @@ class CanvasCubismStoryModel implements StoryCharacterModel {
 
   private readonly animate = (time: number): void => {
     this.frameHandle = null;
-    if (this.disposed || this.paused) return;
+    if (!this.isOperational || this.paused) return;
     const elapsed = Math.max(0, Math.min(0.1, (time - this.previousTime) / 1000));
     this.previousTime = time;
     this.accumulatedTime += elapsed;
@@ -660,8 +705,10 @@ class CanvasCubismStoryModel implements StoryCharacterModel {
 
   private resize(): void {
     const ratio = Math.max(1, finite(globalThis.devicePixelRatio, 1));
-    const width = Math.max(1, Math.round((this.element.clientWidth || 960) * ratio));
-    const height = Math.max(1, Math.round((this.element.clientHeight || 1080) * ratio));
+    // A detached first-frame warmup uses a small buffer; observe the actual
+    // attached dimensions before presenting, including while playback is paused.
+    const width = Math.max(1, Math.round(this.element.clientWidth > 0 ? this.element.clientWidth * ratio : 300));
+    const height = Math.max(1, Math.round(this.element.clientHeight > 0 ? this.element.clientHeight * ratio : 150));
     if (this.element.width !== width) this.element.width = width;
     if (this.element.height !== height) this.element.height = height;
     const bounds: CubismDrawableBounds =
@@ -678,7 +725,7 @@ class CanvasCubismStoryModel implements StoryCharacterModel {
   }
 
   private draw(present = true, duringPreparation = false): void {
-    if (this.disposed || this.gl.isContextLost() || (!duringPreparation && !this.pool.canDrawSynchronously)) return;
+    if (!this.isOperational || (!duringPreparation && !this.pool.canDrawSynchronously)) return;
     this.pool.drawingCanvas(this.gl, this.element.width, this.element.height);
     this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
     this.gl.viewport(0, 0, this.element.width, this.element.height);
@@ -745,6 +792,7 @@ export const createCubismWebRuntimeAdapter = (
       return createCubismWebGlModel({
         ...context,
         gl: rendererGl(context.rendererContext),
+        allowLossyTextureVariants: options.allowLossyTextureVariants === true,
         rendererContext: context.rendererContext,
       });
     },

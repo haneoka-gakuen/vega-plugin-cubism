@@ -9,6 +9,8 @@ import { CubismMatrix44 } from "../../vendor/cubism/math/cubismmatrix44";
 import { CubismUserModel } from "../../vendor/cubism/model/cubismusermodel";
 import type { CubismExpressionMotion } from "../../vendor/cubism/motion/cubismexpressionmotion";
 import type { CubismMotion } from "../../vendor/cubism/motion/cubismmotion";
+import { CubismMotionCurveTarget } from "../../vendor/cubism/motion/cubismmotioninternal";
+import type { CubismMotionQueueEntry } from "../../vendor/cubism/motion/cubismmotionqueueentry";
 import { csmVector } from "../../vendor/cubism/type/csmvector";
 import type { AdvMotionSyncRuntime, AdvMotionSyncSetting, AdvVoiceMotionSyncPcmSnapshot } from "../../types";
 import {
@@ -23,8 +25,14 @@ import { resolveCubismFadeIn } from "./AdvCubismMotionFade";
 import { positionAdvCubismMotionQueueEntry, type AdvCubismMotionPositionOptions } from "./AdvCubismMotionPosition";
 import { PausedCubismRequest } from "./PausedCubismRequest";
 import {
+  AdvCubismParameterLoop,
+  type CubismParameterLoopSnapshot,
+  type CubismParameterLoopTimeline,
+} from "./AdvCubismParameterLoop";
+import {
   cachedCubismModelResourceLoader,
   createOwnedAbortSignal,
+  resolveCubismResourceUrl,
   type CubismModelResourceLoader,
   type OwnedAbortSignal,
 } from "./CubismResourceCache";
@@ -37,6 +45,7 @@ import {
   type UnityCubismMultiplyTextureParameters,
 } from "./UnityCubismAdvLighting";
 
+import { resetCubismExpressionBaseline } from "../../../runtime/CubismExpressionBaseline";
 import { createCubismTexture } from "./CubismTexture";
 import { normalizeCubismTextureVariants, type CubismTextureVariant } from "../../../runtime/CubismTextureVariant";
 
@@ -98,6 +107,8 @@ export interface AdvCubismModelOptions {
   modelUrl: string;
   /** Explicit compressed alternatives; the model manifest retains its PNG slots. */
   textureVariants?: readonly CubismTextureVariant[];
+  /** Explicit consumer permission for lossy re-encoded alternatives. */
+  allowLossyTextureVariants?: boolean;
   /** Cancels browser-side resource waits when this character load loses ownership. */
   signal?: AbortSignal;
   /** Live2DCharacter.DefaultMotionName; its finite clip is restarted by the controller. */
@@ -126,8 +137,6 @@ interface CubismPlaybackRequest {
   readonly fadeInSeconds?: number;
   readonly positionSeconds?: number;
   readonly positionOptions?: AdvCubismMotionPositionOptions;
-  /** Opcode 68: the clip loops with faded-in parameters until a stop request. */
-  readonly parameterLoop?: boolean;
 }
 
 function resolveResourceUrl(baseUrl: string, resource: string): string {
@@ -142,14 +151,18 @@ function fileStem(path: string): string {
 function createWhiteTexture(gl: WebGL2RenderingContext): WebGLTexture {
   const texture = gl.createTexture();
   if (!texture) throw new Error("Unable to allocate the Cubism multiply fallback texture");
-  gl.bindTexture(gl.TEXTURE_2D, texture);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255, 255]));
-  gl.bindTexture(gl.TEXTURE_2D, null);
-  return texture;
+  const binding = gl.getParameter(gl.TEXTURE_BINDING_2D) as WebGLTexture | null;
+  try {
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255, 255]));
+    return texture;
+  } finally {
+    if (!gl.isContextLost()) gl.bindTexture(gl.TEXTURE_2D, binding);
+  }
 }
 
 const IDENTITY_MATRIX = Object.freeze([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] as const);
@@ -180,6 +193,7 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
   private motionRequestSequence = 0;
   private expressionRequestSequence = 0;
   private requestedMotion: CubismPlaybackRequest | null = null;
+  private activeMotionName = "";
   private requestedExpression: CubismPlaybackRequest | null = null;
   private readonly pausedMotionRequest = new PausedCubismRequest<CubismPlaybackRequest>();
   private readonly pausedExpressionRequest = new PausedCubismRequest<CubismPlaybackRequest>();
@@ -189,6 +203,7 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
   private readonly resourceAbort: OwnedAbortSignal;
   private readonly resourceSignal: AbortSignal;
   private readonly resourceLoader: CubismModelResourceLoader;
+  private readonly releaseResourceLoader?: () => void;
   private readonly eyeBlinkIds = new csmVector<CubismIdHandle>();
   private readonly lipSyncIds = new csmVector<CubismIdHandle>();
   private readonly parameterIds = new Map<string, CubismIdHandle>();
@@ -212,27 +227,49 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
   private paused = false;
   private motionClockFrozen = false;
   private animationTimeFrozen = false;
+  private frozenParameters: Float32Array | null = null;
+  private frozenParts: Float32Array | null = null;
+  private readonly authoredParameterIndices = new Map<CubismIdHandle, number>();
+  private readonly authoredPartIndices = new Map<string, number>();
+  private readonly partOpacityOverrides = new Map<number, number>();
   private defaultMotionRestartSuppressed = false;
   private motionSpeed = 1;
   private readonly eyeBlinkBaseValues: number[] = [];
   private eyeBlinkEnabled = true;
-  /** Opcode 69 transition: eyelids ease to open/blinking over this many seconds. */
-  private eyeBlinkWeight = 1;
-  private eyeBlinkTransition = 0;
-  /** Opcode 68: the motion requested as a parameter loop, until stopped or superseded. */
+  private eyeBlinkOpening = 1;
+  private eyeBlinkStopped = false;
+  private eyeBlinkBeforeStopEnabled = true;
+  private eyeBlinkStopStartOpening = 1;
+  private eyeBlinkStopElapsed = 0;
+  private eyeBlinkStopDuration = 0;
+  private readonly eyeBlinkNeutralizeTargets: Array<{ id: CubismIdHandle; index: number; defaultValue: number }> = [];
+  private readonly defaultEyeFadeCurves = new WeakMap<
+    CubismMotion,
+    readonly ({ fadeIn: number; fadeOut: number } | null)[]
+  >();
   private parameterLoopName: string | null = null;
-  /** Parameter snapshot easing home after a parameter loop stops. */
-  private parameterLoopFade: { values: Float32Array; duration: number; elapsed: number } | null = null;
+  private readonly parameterLoop = new AdvCubismParameterLoop();
+  private parameterLoopRequestSequence = 0;
+  private activeParameterLoopSequence = 0;
+  private requestedParameterLoop: CubismPlaybackRequest | null = null;
+  private readonly pausedParameterLoopRequest = new PausedCubismRequest<CubismPlaybackRequest>();
   private multiplyFallbackTexture: WebGLTexture | null = null;
   private ownedMultiplyTexture: WebGLTexture | null = null;
   private motionSync: AdvMotionSyncCoreAdapter | null = null;
   private resourceGeneration = 0;
   private released = false;
+  private gpuContextInvalidated = false;
+  private readonly handleContextLost = (): void => {
+    this.gpuContextInvalidated = true;
+    // A late image/motion completion must not allocate into a restored context
+    // on behalf of this permanently invalidated model generation.
+    this.resourceAbort.abort();
+  };
   private updateSerialValue = 0;
   private drawSerialValue = 0;
 
   get isOperational(): boolean {
-    return !this.released && this.isInitialized();
+    return !this.released && this.isInitialized() && !this.gpuContextInvalidated && !this.gl.isContextLost();
   }
 
   get updateSerial(): number {
@@ -246,9 +283,11 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
   private constructor(options: AdvCubismModelOptions) {
     super();
     this.gl = options.gl;
+    this.gl.canvas?.addEventListener("webglcontextlost", this.handleContextLost);
     this.resourceAbort = createOwnedAbortSignal(options.signal);
     this.resourceSignal = this.resourceAbort.signal;
     this.resourceLoader = options.resourceLoader ?? cachedCubismModelResourceLoader;
+    this.releaseResourceLoader = this.resourceLoader.retain?.();
     this.modelUrl = options.modelUrl;
     this.defaultMotionName = String(options.defaultMotionName || "");
     this.physicsEnabled = options.physics !== false;
@@ -297,12 +336,20 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     const settingBuffer = await this.resourceLoader.loadArrayBuffer(this.modelUrl, this.resourceSignal);
     this.setting = new CubismModelSettingJson(settingBuffer, settingBuffer.byteLength);
     const manifest = JSON.parse(new TextDecoder().decode(settingBuffer));
-    const textureVariants =
-      options.textureVariants ??
-      normalizeCubismTextureVariants(manifest.TextureVariants ?? manifest.FileReferences?.TextureVariants);
+    const textureVariants = normalizeCubismTextureVariants(
+      options.textureVariants ?? manifest.TextureVariants ?? manifest.FileReferences?.TextureVariants,
+    );
     const mocUrl = resolveResourceUrl(this.modelUrl, this.setting.getModelFileName());
     this.loadModel(await this.resourceLoader.loadArrayBuffer(mocUrl, this.resourceSignal), false);
     if (!this._model) throw new Error(`Cubism model could not be created from ${mocUrl}`);
+    for (let index = 0; index < this._model.getParameterCount(); index += 1) {
+      const handle = this._model.getParameterId(index);
+      this.authoredParameterIndices.set(handle, index);
+      this.parameterIds.set(handle.getString().s, handle);
+    }
+    for (let index = 0; index < this._model.getPartCount(); index += 1) {
+      this.authoredPartIndices.set(this._model.getPartId(index).getString().s, index);
+    }
     this.pixelsPerUnitValue = Math.max(0.001, Number(this._model.getPixelsPerUnit()) || 1);
 
     const motionSyncSetting = selectAdvMotionSyncSetting(options.motionSync);
@@ -317,6 +364,15 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
 
     for (let index = 0; index < this.setting.getEyeBlinkParameterCount(); index += 1) {
       this.eyeBlinkIds.pushBack(this.setting.getEyeBlinkParameterId(index));
+    }
+    const neutralizeIds = new Set<CubismIdHandle>();
+    for (let index = 0; index < this.eyeBlinkIds.getSize(); index += 1) neutralizeIds.add(this.eyeBlinkIds.at(index));
+    neutralizeIds.add(CubismFramework.getIdManager().getId("ParamEyeLOpen"));
+    neutralizeIds.add(CubismFramework.getIdManager().getId("ParamEyeROpen"));
+    for (const id of neutralizeIds) {
+      const index = this.realParameterIndex(id);
+      if (index != null)
+        this.eyeBlinkNeutralizeTargets.push({ id, index, defaultValue: this._model.getParameterDefaultValue(index) });
     }
     for (let index = 0; index < this.setting.getLipSyncParameterCount(); index += 1) {
       this.lipSyncIds.pushBack(this.setting.getLipSyncParameterId(index));
@@ -357,15 +413,20 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
           anisotropy,
           this.resourceLoader,
           this.resourceSignal,
-          textureVariants.filter((variant) => variant.textureIndex === index),
+          textureVariants.filter((variant) =>
+            variant.texture
+              ? resolveCubismResourceUrl(this.modelUrl, variant.texture) === url
+              : variant.textureIndex === index,
+          ),
           this.modelUrl,
+          { allowLossyReencoded: options.allowLossyTextureVariants === true },
         ).then(({ texture, flipY }) => {
           // Promise.all rejects as soon as one resource fails. Creation then
           // releases the partially built model while sibling requests may
           // still resolve; never bind into that released renderer, and release
           // the texture this async pass allocated after the model was released.
           if (this.released || generation !== this.resourceGeneration) {
-            this.gl.deleteTexture(texture);
+            this.deleteGpuTexture(texture);
             return;
           }
           this.textures.push(texture);
@@ -497,6 +558,8 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
         if (this.released || generation !== this.resourceGeneration) return null;
         const request = this.requestedMotion;
         if (request?.name === name) this.startMotionRequestWithRecovery(request);
+        const loop = this.requestedParameterLoop;
+        if (loop?.name === name) this.startParameterLoopRequest(loop);
         return motion;
       } catch (error) {
         this.recordResourceFailure("motion", name, error);
@@ -569,13 +632,35 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
       if (this.expressions.has(expression.name)) this.startExpressionRequestWithRecovery(expression);
       else void this.ensureExpression(expression.name);
     }
+    const loop = this.pausedParameterLoopRequest.take();
+    if (loop && this.requestedParameterLoop?.sequence === loop.sequence) this.startParameterLoopRequest(loop);
+  }
+
+  /** Show/Hide discard deferred requests while Resume consumes them. */
+  clearPausedRequests(): void {
+    const motion = this.pausedMotionRequest.take();
+    if (motion && this.requestedMotion?.sequence === motion.sequence) {
+      this.requestedMotion = null;
+      this.motionRequestSequence++;
+    }
+    const expression = this.pausedExpressionRequest.take();
+    if (expression && this.requestedExpression?.sequence === expression.sequence) {
+      this.requestedExpression = null;
+      this.expressionRequestSequence++;
+    }
+    const loop = this.pausedParameterLoopRequest.take();
+    if (loop && this.requestedParameterLoop?.sequence === loop.sequence) {
+      this.requestedParameterLoop = null;
+      this.parameterLoopRequestSequence++;
+    }
+    const active = this.parameterLoop.capture();
+    this.parameterLoopName = active && !active.stopping ? active.name : null;
   }
 
   /**
-   * Live2DCharacter.ResetExpressionParametersToDefault iterates the parameters
-   * referenced by its loaded expressions, writes each model DefaultValue, then
-   * saves and force-updates the drawable frame. It does not restore the
-   * pre-expression motion frame wholesale.
+   * Reset loaded expression parameters on the saved motion baseline, then
+   * refresh Core. Restoring the baseline first keeps repeated Resume calls
+   * from accumulating late additive inputs in subsequent rendered frames.
    */
   resetExpressionParametersToDefault(): void {
     if (!this.isInitialized()) return;
@@ -587,11 +672,7 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
         if (parameterIndex != null) resetIndices.add(parameterIndex);
       }
     }
-    for (const index of resetIndices) {
-      this._model.setParameterValueByIndex(index, this._model.getParameterDefaultValue(index));
-    }
-    this._model.saveParameters();
-    this._model.update();
+    resetCubismExpressionBaseline(this._model, resetIndices);
   }
 
   setEyeBlinkEnabled(enabled: boolean): void {
@@ -608,8 +689,34 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
   }
 
   /** Freeze every time-based effect for the standalone viewer's pose mode. */
-  setAnimationTimeFrozen(frozen: boolean): void {
-    this.animationTimeFrozen = Boolean(frozen);
+  setAnimationTimeFrozen(
+    frozen: boolean,
+    snapshot?: { readonly parameters: readonly CubismParameterValue[]; readonly parts: readonly CubismPartValue[] },
+  ): void {
+    const next = Boolean(frozen);
+    if (this.animationTimeFrozen === next && !snapshot) return;
+    this.animationTimeFrozen = next;
+    // Capture the composited pose once. Re-evaluating a zero-delta frame can
+    // still alter physics outputs, pose links and expression blends.
+    this.frozenParameters =
+      next && this.isInitialized() ? Float32Array.from(this.parameterValues(), (parameter) => parameter.value) : null;
+    this.frozenParts =
+      next && this.isInitialized() ? Float32Array.from(this.partValues(), (part) => part.opacity) : null;
+    // Context recovery restores a temporal snapshot without turning every
+    // channel into a permanent manual override when animation resumes.
+    if (next && snapshot && this.frozenParameters && this.frozenParts) {
+      for (const parameter of snapshot.parameters) {
+        const handle = this.parameterIds.get(parameter.id);
+        const index = handle ? this.realParameterIndex(handle) : null;
+        if (index != null && Number.isFinite(parameter.value)) this.frozenParameters[index] = parameter.value;
+      }
+      for (const part of snapshot.parts) {
+        const index = this.authoredPartIndices.get(part.id);
+        if (index != null && Number.isFinite(part.opacity)) {
+          this.frozenParts[index] = Math.max(0, Math.min(1, part.opacity));
+        }
+      }
+    }
   }
 
   /** Suppress only the controller's automatic default-idle restart. */
@@ -642,9 +749,9 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     // Invalidate it so completion cannot resurrect an obsolete motion.
     if (this.requestedMotion) this.motionRetries.succeed(this.requestedMotion.name);
     this.requestedMotion = null;
+    this.activeMotionName = "";
     this.pausedMotionRequest.clear();
     this.motionRequestSequence += 1;
-    this.parameterLoopName = null;
     this._motionManager.stopAllMotions();
   }
 
@@ -694,12 +801,13 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
   }
 
   setPartOpacity(id: string, opacity: number): void {
-    let handle = this.parameterIds.get(id);
-    if (!handle) {
-      handle = CubismFramework.getIdManager().getId(id);
-      this.parameterIds.set(id, handle);
-    }
-    this._model.setPartOpacityById(handle, Math.max(0, Math.min(1, opacity)));
+    if (this.released || !Number.isFinite(opacity)) return;
+    const index = this.authoredPartIndices.get(id);
+    if (index == null) return;
+    const value = Math.max(0, Math.min(1, opacity));
+    this.partOpacityOverrides.set(index, value);
+    this._model.setPartOpacityByIndex(index, value);
+    if (this.frozenParts) this.frozenParts[index] = value;
   }
 
   drawableBounds(visibleOnly = true): CubismDrawableBounds | null {
@@ -756,36 +864,184 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
   playParameterLoopMotion(name: string, fadeInSeconds?: number): boolean {
     if (!this.hasMotion(name)) return false;
     this.parameterLoopName = name;
-    this.parameterLoopFade = null;
-    return this.requestMotion(name, fadeInSeconds, undefined, undefined, true);
+    const request: CubismPlaybackRequest = {
+      name,
+      fadeInSeconds,
+      sequence: ++this.parameterLoopRequestSequence,
+    };
+    this.requestedParameterLoop = request;
+    return this.startParameterLoopRequest(request);
   }
 
-  /** StopParameterLoop(fade): `fadeSeconds` is the command's MotionFadeIn; default is the clip fade-out. */
+  /** Stop retires only the independent parameter channel. */
   stopParameterLoopMotion(fadeSeconds?: number): void {
-    const name = this.parameterLoopName;
-    if (!name) return;
     this.parameterLoopName = null;
-    if (this.released || !this.isInitialized()) {
-      this.parameterLoopFade = null;
-      this.stopMotions();
+    const request: CubismPlaybackRequest = {
+      name: "",
+      fadeInSeconds: fadeSeconds,
+      sequence: ++this.parameterLoopRequestSequence,
+    };
+    this.requestedParameterLoop = request;
+    this.startParameterLoopRequest(request);
+  }
+
+  private startParameterLoopRequest(request: CubismPlaybackRequest): boolean {
+    if (this.released || this.requestedParameterLoop?.sequence !== request.sequence) return false;
+    if (this.paused) {
+      this.pausedParameterLoopRequest.retain(request);
+      if (request.name && !this.motions.has(request.name)) void this.ensureMotion(request.name);
+      return false;
+    }
+    if (this.activeParameterLoopSequence === request.sequence) return true;
+    if (!request.name) {
+      this.parameterLoop.stop(this._model, request.fadeInSeconds);
+      this.activeParameterLoopSequence = request.sequence;
+      return true;
+    }
+    const motion = this.motions.get(request.name);
+    if (!motion) {
+      void this.ensureMotion(request.name);
+      return false;
+    }
+    if (!this.parameterLoop.play(this._model, request.name, motion, request.fadeInSeconds)) return false;
+    this.activeParameterLoopSequence = request.sequence;
+    return true;
+  }
+
+  createSnapshot(): unknown {
+    const pending = this.pausedParameterLoopRequest.peek();
+    const request = this.requestedParameterLoop;
+    return {
+      kind: "cubism3-parameter-loop-v1",
+      loop: this.parameterLoop.capture(),
+      pending: pending ? { name: pending.name, fadeInSeconds: pending.fadeInSeconds } : null,
+      request:
+        !pending && request && request.sequence !== this.activeParameterLoopSequence
+          ? { name: request.name, fadeInSeconds: request.fadeInSeconds }
+          : null,
+    };
+  }
+
+  async restoreSnapshot(input: unknown): Promise<void> {
+    const snapshot = input as {
+      kind: string;
+      loop: CubismParameterLoopSnapshot | null;
+      pending: { name: string; fadeInSeconds?: number } | null;
+      request?: { name: string; fadeInSeconds?: number } | null;
+    };
+    if (snapshot?.kind !== "cubism3-parameter-loop-v1") throw new TypeError("cubism_parameter_loop_snapshot");
+    this.requestedParameterLoop = null;
+    this.pausedParameterLoopRequest.clear();
+    const sequence = ++this.parameterLoopRequestSequence;
+    if (snapshot.loop) {
+      for (const key of ["phase", "weight", "fadeStart", "fadeTarget", "fadeElapsed", "fadeDuration"] as const) {
+        if (!Number.isFinite(snapshot.loop[key])) throw new TypeError("cubism_parameter_loop_snapshot_clock");
+      }
+      const motion = await this.ensureMotion(snapshot.loop.name);
+      if (this.released || sequence !== this.parameterLoopRequestSequence) return;
+      if (!motion) throw new Error(`cubism_parameter_loop_resource:${snapshot.loop.name}`);
+      this.parameterLoop.restore(this._model, motion, snapshot.loop);
+      this.parameterLoopName = snapshot.loop.stopping ? null : snapshot.loop.name;
+    } else {
+      this.parameterLoop.stopImmediately(this._model);
+      this.parameterLoopName = null;
+    }
+    if (snapshot.pending) {
+      this.requestedParameterLoop = { ...snapshot.pending, sequence };
+      this.pausedParameterLoopRequest.retain(this.requestedParameterLoop);
+    } else if (snapshot.request) {
+      this.requestedParameterLoop = { ...snapshot.request, sequence };
+      this.startParameterLoopRequest(this.requestedParameterLoop);
+    }
+    this._model.update();
+    this.updateSerialValue++;
+  }
+
+  restoreParameterLoopTimeline(timeline: CubismParameterLoopTimeline): void | Promise<void> {
+    const sequence = ++this.parameterLoopRequestSequence;
+    this.requestedParameterLoop = null;
+    this.pausedParameterLoopRequest.clear();
+    const names = new Set(
+      timeline.events.flatMap((event) => (event.kind === "loop" && event.name ? [event.name] : [])),
+    );
+    if ([...names].every((name) => this.motions.has(name))) {
+      this.projectParameterLoopTimeline(timeline, sequence);
       return;
     }
-    // Ease the loop's authored parameters home over the clip fade-out instead
-    // of snapping tear/glow style curves off at the stop command.
-    const fadeOut = fadeSeconds ?? this.motions.get(name)?.getFadeOutTime();
-    const duration = Number.isFinite(fadeOut) && (fadeOut as number) >= 0 ? (fadeOut as number) : 0.3;
-    const count = this._model.getParameterCount();
-    const values = new Float32Array(count);
-    for (let index = 0; index < count; index += 1) values[index] = this._model.getParameterValueByIndex(index);
-    this.parameterLoopFade = { values, duration, elapsed: 0 };
-    this.stopMotions();
+    return Promise.all([...names].map((name) => this.ensureMotion(name))).then(() =>
+      this.projectParameterLoopTimeline(timeline, sequence),
+    );
+  }
+
+  private projectParameterLoopTimeline(timeline: CubismParameterLoopTimeline, sequence: number): void {
+    if (this.released || sequence !== this.parameterLoopRequestSequence) return;
+    const values = new Float32Array(this._model.getParameterCount());
+    for (let index = 0; index < values.length; index++) values[index] = this._model.getParameterValueByIndex(index);
+    this.parameterLoop.stopImmediately(this._model);
+    let at = timeline.events[0]?.atSeconds ?? timeline.atSeconds;
+    let paused = false;
+    let rate = 1;
+    let pending: Extract<CubismParameterLoopTimeline["events"][number], { kind: "loop" }> | null = null;
+    const apply = (event: NonNullable<typeof pending>): void => {
+      if (!event.name) this.parameterLoop.stop(this._model, event.fadeSeconds);
+      else {
+        const motion = this.motions.get(event.name);
+        if (!motion) throw new Error(`cubism_parameter_loop_resource:${event.name}`);
+        this.parameterLoop.play(this._model, event.name, motion, event.fadeSeconds);
+      }
+    };
+    for (const event of timeline.events) {
+      if (!paused) this.parameterLoop.advance(this._model, Math.max(0, event.atSeconds - at) * rate);
+      at = event.atSeconds;
+      if (event.kind === "loop") {
+        if (paused) pending = event;
+        else apply(event);
+      } else if (event.kind === "pause") {
+        paused = event.paused;
+        if (!paused && pending) {
+          apply(pending);
+          pending = null;
+        }
+      } else if (event.kind === "speed") {
+        rate = event.rate;
+      } else {
+        paused = false;
+        pending = null;
+      }
+    }
+    if (!paused) this.parameterLoop.advance(this._model, Math.max(0, timeline.atSeconds - at) * rate);
+    const state = this.parameterLoop.capture();
+    this.parameterLoopName = state && !state.stopping ? state.name : null;
+    if (pending) {
+      this.requestedParameterLoop = { name: pending.name, fadeInSeconds: pending.fadeSeconds, sequence };
+      this.pausedParameterLoopRequest.retain(this.requestedParameterLoop);
+    }
+    for (let index = 0; index < values.length; index++) this._model.setParameterValueByIndex(index, values[index]);
+    this.parameterLoop.apply(this._model);
+    this._model.update();
+    this.updateSerialValue++;
   }
 
   /** AdvCharacterController.SetEyeBlinkStopped(stopped, transition = 0.2 s). */
   setEyeBlinkStopped(stopped: boolean, transitionSeconds = 0): void {
-    this.eyeBlinkEnabled = !stopped;
-    this.eyeBlinkTransition = Math.max(0, Number.isFinite(transitionSeconds) ? transitionSeconds : 0);
-    if (this.eyeBlinkTransition === 0) this.eyeBlinkWeight = stopped ? 0 : 1;
+    if (!stopped) {
+      if (!this.eyeBlinkStopped) return;
+      this.eyeBlinkStopped = false;
+      this.eyeBlinkEnabled = this.eyeBlinkBeforeStopEnabled;
+      this.eyeBlinkStopElapsed = this.eyeBlinkStopDuration = 0;
+      return;
+    }
+    const duration = Math.max(0, Number.isFinite(transitionSeconds) ? transitionSeconds : 0);
+    if (this.eyeBlinkStopped) {
+      if (duration === 0) this.eyeBlinkStopElapsed = this.eyeBlinkStopDuration = 0;
+      return;
+    }
+    this.eyeBlinkBeforeStopEnabled = this.eyeBlinkEnabled;
+    this.eyeBlinkEnabled = false;
+    this.eyeBlinkStopped = true;
+    this.eyeBlinkStopStartOpening = this.eyeBlinkOpening;
+    this.eyeBlinkStopElapsed = 0;
+    this.eyeBlinkStopDuration = duration;
   }
 
   /** Restore an authored motion at an absolute clip-local transport phase. */
@@ -803,22 +1059,17 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     fadeInSeconds?: number,
     positionSeconds?: number,
     positionOptions?: AdvCubismMotionPositionOptions,
-    parameterLoop = false,
   ): boolean {
     if (!name || (!this.motions.has(name) && !this.buildMotionIndex().has(name))) return false;
     if (this.requestedMotion?.name && this.requestedMotion.name !== name) {
       this.motionRetries.succeed(this.requestedMotion.name);
     }
-    // An ordinary motion request supersedes a running parameter loop; the
-    // replacement clip plays exactly once.
-    if (!parameterLoop && this.parameterLoopName !== name) this.parameterLoopName = null;
     const request: CubismPlaybackRequest = {
       sequence: ++this.motionRequestSequence,
       name,
       fadeInSeconds,
       positionSeconds,
       positionOptions,
-      parameterLoop,
     };
     this.requestedMotion = request;
     if (this.paused) {
@@ -895,13 +1146,10 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     const motion = this.motions.get(request.name);
     if (!motion) return false;
     motion.setFadeInTime(resolveCubismFadeIn(request.fadeInSeconds, this.motionFadeInTimes.get(request.name)));
-    // The cached CubismMotion instance is shared between loop and ordinary
-    // playback, so the loop flags are rewritten for every start instead of
-    // configured once. Loop restarts skip the fade (parameters hold their
-    // faded-in values across the wrap); a finite endTime would kill the loop.
-    motion.setIsLoop(Boolean(request.parameterLoop));
-    motion.setIsLoopFadeIn(!request.parameterLoop);
+    motion.setLoop(false);
+    motion.setLoopFadeIn(true);
     const handle = this._motionManager.startMotionPriority(motion, false, MOTION_PRIORITY_FORCE);
+    this.activeMotionName = request.name;
     if (request.positionSeconds != null) {
       const entry = this._motionManager.getCubismMotionQueueEntry(handle);
       if (!entry) return false;
@@ -960,6 +1208,11 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     }
   }
 
+  /** Unscaled resource housekeeping, independent of authored pose evaluation. */
+  pollResourceReadiness(): void {
+    if (this.isInitialized()) this.retryRequestedResources();
+  }
+
   private retryRequestedResources(): void {
     if (this.motionRetries.empty && this.expressionRetries.empty) return;
     const now = cubismRetryClockSeconds();
@@ -983,6 +1236,15 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
       if (this.expressions.has(expression.name)) this.startExpressionRequestWithRecovery(expression);
       else void this.ensureExpression(expression.name);
     }
+    const loop = this.requestedParameterLoop;
+    if (
+      loop?.name &&
+      this.motionRetries.has(loop.name) &&
+      this.motionRetries.isDue(loop.name, now) &&
+      !this.loadingMotions.has(loop.name)
+    ) {
+      this.startParameterLoopRequest(loop);
+    }
   }
 
   /**
@@ -996,12 +1258,10 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
   }
 
   setParameter(id: string, value: number, weight = 1): void {
-    let handle = this.parameterIds.get(id);
-    if (!handle) {
-      handle = CubismFramework.getIdManager().getId(id);
-      this.parameterIds.set(id, handle);
-    }
-    this._model.setParameterValueById(handle, value, weight);
+    if (this.released || !Number.isFinite(value) || !Number.isFinite(weight)) return;
+    const handle = this.parameterIds.get(id);
+    const index = handle ? this.realParameterIndex(handle) : null;
+    if (index != null) this._model.setParameterValueByIndex(index, value, weight);
   }
 
   eyeBallPosition(): { x: number; y: number } {
@@ -1023,12 +1283,9 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
   }
 
   parameterRange(id: string): { minimum: number; maximum: number } | null {
-    let handle = this.parameterIds.get(id);
-    if (!handle) {
-      handle = CubismFramework.getIdManager().getId(id);
-      this.parameterIds.set(id, handle);
-    }
-    const index = this.realParameterIndex(handle);
+    if (this.released) return null;
+    const handle = this.parameterIds.get(id);
+    const index = handle ? this.realParameterIndex(handle) : null;
     if (index == null) return null;
     return {
       minimum: this._model.getParameterMinimumValue(index),
@@ -1037,10 +1294,7 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
   }
 
   private realParameterIndex(handle: CubismIdHandle): number | null {
-    // CubismModel synthesizes storage for unknown IDs, so getParameterIndex
-    // alone cannot distinguish a real authored parameter.
-    const index = this._model.getParameterIndex(handle);
-    return index >= 0 && index < this._model.getParameterCount() ? index : null;
+    return this.authoredParameterIndices.get(handle) ?? null;
   }
 
   private applyMotionSync(source: AdvVoiceMotionSyncPcmSnapshot, deltaSeconds: number, weight: number): void {
@@ -1056,8 +1310,8 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
         handle = CubismFramework.getIdManager().getId(id);
         this.parameterIds.set(id, handle);
       }
-      const index = this._model.getParameterIndex(handle);
-      if (index < 0) continue;
+      const index = this.realParameterIndex(handle);
+      if (index == null) continue;
       const baseValue = this._model.getParameterValueByIndex(index);
       this._model.setParameterValueByIndex(
         index,
@@ -1074,47 +1328,56 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
   }
 
   update(deltaSeconds: number, frame: CubismParameterFrame): void {
-    if (!this.isInitialized()) return;
+    if (!this.isOperational) return;
     this.retryRequestedResources();
+    if (this.animationTimeFrozen && this.frozenParameters) {
+      for (let index = 0; index < this.frozenParameters.length; index += 1) {
+        this._model.setParameterValueByIndex(index, this.frozenParameters[index]);
+      }
+      for (let index = 0; index < (this.frozenParts?.length ?? 0); index += 1) {
+        this._model.setPartOpacityByIndex(index, this.frozenParts![index]);
+      }
+      for (const id in frame.overrides) {
+        if (Object.hasOwn(frame.overrides, id)) this.setParameter(id, frame.overrides[id]);
+      }
+      this._model.update();
+      this.updateSerialValue += 1;
+      return;
+    }
+    if (this.paused) return;
     const delta = Math.max(0, Math.min(0.1, Number(deltaSeconds) || 0));
     const effectDelta = this.animationTimeFrozen ? 0 : delta;
     this.elapsedSeconds += effectDelta;
+    if (this.eyeBlinkStopped && this.eyeBlinkStopElapsed < this.eyeBlinkStopDuration)
+      this.eyeBlinkStopElapsed += effectDelta * this.motionSpeed;
+    const motionDelta = this.motionClockFrozen || this.animationTimeFrozen ? 0 : delta * this.motionSpeed;
+    this.parameterLoop.advance(this._model, motionDelta);
     this._model.loadParameters();
     // loadParameters restored the pre-ADV saved frame, including removal of
     // the additive values retained from the preceding rendered frame.
-    // Pause owns only the authored motion/expression clocks. Complete pose
-    // freeze is a separate opt-in flag so story/runtime pause semantics remain
-    // live for physics, blink, lip sync and late ADV inputs.
-    const motionDelta =
-      this.paused || this.motionClockFrozen || this.animationTimeFrozen ? 0 : delta * this.motionSpeed;
+    // Role Pause returns before any simulation. Explicit viewer pose mode
+    // above can still install manually edited parameters on a captured frame.
     const motionUpdated = this._motionManager.updateMotion(this._model, motionDelta);
+    this.neutralizeDefaultMotionEyeBlink();
     this._model.saveParameters();
+    this._pose?.updateParameters(this._model, effectDelta);
     this._expressionManager.updateMotion(
       this._model,
       this.paused || this.motionClockFrozen || this.animationTimeFrozen ? 0 : delta,
     );
-    this.applyParameterLoopFade(this.paused || this.motionClockFrozen || this.animationTimeFrozen ? 0 : delta);
+    this.parameterLoop.apply(this._model);
     // PlayMotion disables AutoEyeBlinkInput for an ordinary authored motion,
     // while Idle immediately restores the controller's configured blink flag
     // after starting DefaultMotionName. The default clip is finite and gets
     // restarted below, so basing this only on motionUpdated would suppress
     // every idle blink and make the eyes look permanently posed.
-    const defaultIdleIsUpdating =
-      motionUpdated && Boolean(this.defaultMotionName) && this.requestedMotion?.name === this.defaultMotionName;
-    const blinkTarget = this.eyeBlinkEnabled ? 1 : 0;
-    if (this.eyeBlinkWeight !== blinkTarget) {
-      const step = this.eyeBlinkTransition > 0 ? effectDelta / this.eyeBlinkTransition : 1;
-      this.eyeBlinkWeight =
-        blinkTarget > this.eyeBlinkWeight
-          ? Math.min(blinkTarget, this.eyeBlinkWeight + step)
-          : Math.max(blinkTarget, this.eyeBlinkWeight - step);
-    }
+    const defaultIdleIsUpdating = Boolean(this.defaultMotionName) && this.activeMotionName === this.defaultMotionName;
     this.applyMultiplicativeEyeBlink(
       effectDelta,
-      this.eyeBlinkWeight > 0 &&
+      this.eyeBlinkEnabled &&
         !this.motionClockFrozen &&
         !this.animationTimeFrozen &&
-        (this.paused || !motionUpdated || defaultIdleIsUpdating),
+        ((!this.defaultMotionName && !motionUpdated) || defaultIdleIsUpdating),
     );
 
     // Cubism's interactive focus is additive: eyes lead, the head follows over
@@ -1163,7 +1426,6 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     }
     this._breath?.updateParameters(this._model, effectDelta);
     this._physics?.evaluate(this._model, effectDelta);
-    this._pose?.updateParameters(this._model, effectDelta);
 
     if (overrides) {
       for (const id in overrides) {
@@ -1172,6 +1434,9 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     }
 
     this.applyLateAdvOverrides(frame);
+    for (const [index, opacity] of this.partOpacityOverrides) {
+      this._model.setPartOpacityByIndex(index, opacity);
+    }
     this._model.update();
     this.updateSerialValue += 1;
 
@@ -1196,26 +1461,64 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     }
   }
 
-  /**
-   * Eases the parameters a stopping parameter loop had authored back to the
-   * frame's base (saved plus expression) values. Applied after motion and
-   * expression updates so it overrides them, and per frame — nothing is saved
-   * into the restored base.
-   */
-  private applyParameterLoopFade(deltaSeconds: number): void {
-    const fade = this.parameterLoopFade;
-    if (!fade) return;
-    fade.elapsed += deltaSeconds;
-    const t = fade.duration > 0 ? Math.min(1, fade.elapsed / fade.duration) : 1;
-    const keep = 1 - t;
-    const count = Math.min(fade.values.length, this._model.getParameterCount());
-    for (let index = 0; index < count; index += 1) {
-      const base = this._model.getParameterValueByIndex(index);
-      const captured = fade.values[index] as number;
-      if (captured === base) continue;
-      this._model.setParameterValueByIndex(index, base + (captured - base) * keep);
+  private get eyeBlinkStopWeight(): number {
+    return this.eyeBlinkStopDuration > 0
+      ? Math.max(0, Math.min(1, this.eyeBlinkStopElapsed / this.eyeBlinkStopDuration))
+      : 1;
+  }
+
+  private defaultMotionOverridesEyeTargets(motion: CubismMotion, entry: CubismMotionQueueEntry): boolean {
+    if (entry.getStateWeight() < 1) return false;
+    let curves = this.defaultEyeFadeCurves.get(motion);
+    if (!curves) {
+      curves = this.eyeBlinkNeutralizeTargets.map(({ id }) => {
+        for (let index = 0; index < motion._motionData.curveCount; index += 1) {
+          const curve = motion._motionData.curves.at(index);
+          if (curve.type === CubismMotionCurveTarget.CubismMotionCurveTarget_Parameter && curve.id === id)
+            return { fadeIn: curve.fadeInTime, fadeOut: curve.fadeOutTime };
+        }
+        return null;
+      });
+      this.defaultEyeFadeCurves.set(motion, curves);
     }
-    if (t >= 1) this.parameterLoopFade = null;
+    const elapsed = this._motionManager._userTimeSeconds - entry.getFadeInStartTime();
+    for (const curve of curves) {
+      if (!curve || (curve.fadeIn >= 0 && elapsed < curve.fadeIn)) return false;
+      // Unity's per-parameter gate subtracts clip elapsed, independently of
+      // the global fade weight checked above.
+      const remaining = entry.getEndTime() - elapsed;
+      if (curve.fadeOut >= 0 && remaining >= 0 && remaining < curve.fadeOut) return false;
+    }
+    return true;
+  }
+
+  /** EyeBlinkStopNeutralizer runs immediately before ParameterStore.Save. */
+  private neutralizeDefaultMotionEyeBlink(): void {
+    if (
+      !this.eyeBlinkStopped ||
+      !this.defaultMotionName ||
+      this.activeMotionName !== this.defaultMotionName ||
+      this.eyeBlinkNeutralizeTargets.length === 0
+    )
+      return;
+    const defaultMotion = this.motions.get(this.defaultMotionName);
+    if (!defaultMotion) return;
+    const entries = this._motionManager.getCubismMotionQueueEntries();
+    let hasOtherMotion = false;
+    let latestDefault: CubismMotionQueueEntry | null = null;
+    for (let index = 0; index < entries.getSize(); index += 1) {
+      const entry = entries.at(index);
+      if (!entry || !entry.isAvailable() || entry.isFinished()) continue;
+      if (entry._motion === defaultMotion) latestDefault = entry;
+      else hasOtherMotion = true;
+    }
+    if (hasOtherMotion && (!latestDefault || !this.defaultMotionOverridesEyeTargets(defaultMotion, latestDefault)))
+      return;
+    const weight = this.eyeBlinkStopWeight;
+    for (const target of this.eyeBlinkNeutralizeTargets) {
+      const value = this._model.getParameterValueByIndex(target.index);
+      this._model.setParameterValueByIndex(target.index, value + (target.defaultValue - value) * weight);
+    }
   }
 
   private applyMultiplicativeEyeBlink(deltaSeconds: number, canStartBlink: boolean): void {
@@ -1226,7 +1529,7 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     // Native IsBlinking is consulted only by UpdateEyeBlinkIdling
     // (0x835c174). PlayMotion clears it, but a blink already in its closing,
     // closed or opening phase continues until the eyes are fully open.
-    if ((!canStartBlink && !blinkInProgress) || this.eyeBlinkWeight <= 0) return;
+    if (!this.eyeBlinkStopped && !canStartBlink && !blinkInProgress) return;
     const count = this.eyeBlinkIds.getSize();
     this.eyeBlinkBaseValues.length = count;
     for (let index = 0; index < count; index += 1) {
@@ -1235,20 +1538,23 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     // The Web SDK helper writes its sampled opening as an absolute value.
     // Native CubismAutoEyeBlinkInput is BlendMode.Multiply, so capture that
     // sample and reapply it over every motion/expression-authored eye value.
-    this._eyeBlink.updateParameters(this._model, deltaSeconds, this.motionSpeed);
+    if (this.eyeBlinkStopped) {
+      this.eyeBlinkOpening =
+        this.eyeBlinkStopStartOpening + this.eyeBlinkStopWeight * (1 - this.eyeBlinkStopStartOpening);
+    } else {
+      this._eyeBlink.updateParameters(this._model, deltaSeconds, this.motionSpeed);
+      this.eyeBlinkOpening = count > 0 ? this._model.getParameterValueById(this.eyeBlinkIds.at(0)) : 1;
+    }
     for (let index = 0; index < count; index += 1) {
       const id = this.eyeBlinkIds.at(index);
-      // The opcode 69 weight eases the lids to open (0) or full blink (1).
-      const opening = 1 - this.eyeBlinkWeight * (1 - this._model.getParameterValueById(id));
-      this._model.setParameterValueById(id, this.eyeBlinkBaseValues[index] * opening);
+      this._model.setParameterValueById(id, this.eyeBlinkBaseValues[index] * this.eyeBlinkOpening);
     }
   }
 
   private applyLateAdvOverrides(frame: CubismParameterFrame): void {
     // Live2DCharacter.OnLateUpdateInternal applies ADV Angle and Look after
-    // motion, harmonic motion, breath, physics and pose. Our liveness-safe Pause
-    // keeps this late path active while only the authored clip clocks remain
-    // frozen. Angle is additive (SetOverrideAngleEnabled(true, true)); Look is a
+    // motion, harmonic motion, breath, physics and pose. Role Pause skips the
+    // complete update. Angle is additive (SetOverrideAngleEnabled(true, true)); Look is a
     // final absolute eye parameter. Cubism setters clamp to each authored range.
     const angleXIndex = this.realParameterIndex(this.angleXId);
     if (frame.angleX != null && angleXIndex != null) {
@@ -1282,7 +1588,7 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     color: readonly [number, number, number, number],
     drawState: AdvCubismDrawState = {},
   ): void {
-    if (!this.isInitialized()) return;
+    if (!this.isOperational) return;
     // CubismMatrix44.setMatrix copies its input, while Matrix4.elements is
     // already the required 16-value column-major sequence. Copy directly into
     // the model-owned storage instead of allocating a Float32Array per draw.
@@ -1334,51 +1640,96 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     const generation = this.resourceGeneration;
     const { texture, flipY } = await createCubismTexture(this.gl, url, 1, this.resourceLoader, this.resourceSignal);
     if (flipY) {
-      this.gl.deleteTexture(texture);
+      this.deleteGpuTexture(texture);
       throw new Error("Multiply textures require top-left texture orientation");
     }
     // createCubismTexture allocates before this async caller regains control, so
     // release the texture if the model was torn down while it was loading.
     if (this.released || generation !== this.resourceGeneration) {
-      this.gl.deleteTexture(texture);
+      this.deleteGpuTexture(texture);
       return;
     }
-    if (this.ownedMultiplyTexture) this.gl.deleteTexture(this.ownedMultiplyTexture);
+    this.deleteGpuTexture(this.ownedMultiplyTexture);
     this.ownedMultiplyTexture = texture;
     this.setUnityMultiplyTexture(texture, options);
+  }
+
+  private deleteGpuTexture(texture: WebGLTexture | null): void {
+    // Context loss already reclaimed this generation's GPU storage. A restored
+    // context rejects its old handles even though isContextLost() is now false.
+    if (texture && !this.gpuContextInvalidated && !this.gl.isContextLost()) this.gl.deleteTexture(texture);
   }
 
   override release(): void {
     if (this.released) return;
     this.released = true;
-    this.resourceAbort.abort();
-    this.resourceGeneration += 1;
-    this._motionManager.stopAllMotions();
-    this.motionSync?.release();
-    this.motionSync = null;
-    for (const texture of this.textures) this.gl.deleteTexture(texture);
-    this.textures.length = 0;
-    if (this.ownedMultiplyTexture) this.gl.deleteTexture(this.ownedMultiplyTexture);
-    if (this.multiplyFallbackTexture) this.gl.deleteTexture(this.multiplyFallbackTexture);
-    this.ownedMultiplyTexture = null;
-    this.multiplyFallbackTexture = null;
-    this.motions.clear();
-    this.expressions.clear();
-    this.motionFadeInTimes.clear();
-    this.expressionFadeInTimes.clear();
-    this.motionIndex = null;
-    this.expressionIndex = null;
-    this.loadingMotions.clear();
-    this.loadingExpressions.clear();
-    this.motionRetries.clear();
-    this.expressionRetries.clear();
-    this.requestedMotion = null;
-    this.requestedExpression = null;
-    this.pausedMotionRequest.clear();
-    this.pausedExpressionRequest.clear();
-    this.motionRequestSequence += 1;
-    this.expressionRequestSequence += 1;
-    this.setting?.release();
-    super.release();
+    const errors: unknown[] = [];
+    const cleanup = (action: () => void): void => {
+      try {
+        action();
+      } catch (error) {
+        errors.push(error);
+      }
+    };
+    try {
+      cleanup(() => this.gl.canvas?.removeEventListener("webglcontextlost", this.handleContextLost));
+      cleanup(() => this.resourceAbort.abort());
+      this.resourceGeneration += 1;
+      cleanup(() => this._motionManager?.stopAllMotions());
+      cleanup(() => this.motionSync?.release());
+      this.motionSync = null;
+      for (const texture of this.textures) cleanup(() => this.deleteGpuTexture(texture));
+      this.textures.length = 0;
+      cleanup(() => this.deleteGpuTexture(this.ownedMultiplyTexture));
+      cleanup(() => this.deleteGpuTexture(this.multiplyFallbackTexture));
+      this.ownedMultiplyTexture = null;
+      this.multiplyFallbackTexture = null;
+      this.motions.clear();
+      this.expressions.clear();
+      this.motionFadeInTimes.clear();
+      this.expressionFadeInTimes.clear();
+      this.motionIndex = null;
+      this.expressionIndex = null;
+      this.loadingMotions.clear();
+      this.loadingExpressions.clear();
+      this.motionRetries.clear();
+      this.expressionRetries.clear();
+      this.requestedMotion = null;
+      this.requestedExpression = null;
+      this.pausedMotionRequest.clear();
+      this.pausedExpressionRequest.clear();
+      this.motionRequestSequence += 1;
+      this.expressionRequestSequence += 1;
+      cleanup(() => this.setting?.release());
+      this.frozenParameters = null;
+      this.frozenParts = null;
+      this.authoredParameterIndices.clear();
+      this.authoredPartIndices.clear();
+      this.partOpacityOverrides.clear();
+      this.parameterIds.clear();
+      this.setInitialized(false);
+    } catch (error) {
+      errors.push(error);
+    } finally {
+      // Isolate manager failures so CubismUserModel can still release Core and
+      // the renderer. The owner boundary covers every preceding cleanup exit.
+      cleanup(() => {
+        const manager = this._motionManager;
+        this._motionManager = null;
+        manager?.release();
+      });
+      cleanup(() => {
+        const manager = this._expressionManager;
+        this._expressionManager = null;
+        manager?.release();
+      });
+      cleanup(() => super.release());
+      cleanup(() => {
+        if (this.getRenderer()) this.deleteRenderer();
+      });
+      cleanup(() => this.releaseResourceLoader?.());
+    }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) throw new AggregateError(errors, "Cubism model release failed");
   }
 }
