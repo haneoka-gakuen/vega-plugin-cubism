@@ -9,6 +9,6 @@ Pod::Spec.new do |s|
   s.source = { :path => '.' }
   s.platform = :osx, '10.15'
   s.dependency 'FlutterMacOS'
-  core = File.expand_path('../.local/cubism_core/macos/libLive2DCubismCore.dylib', __dir__)
-  s.vendored_libraries = core if File.exist?(core)
+  core = '.local/cubism_core/libLive2DCubismCore.dylib'
+  s.vendored_libraries = core if File.exist?(File.expand_path(core, __dir__))
 end

@@ -64,12 +64,13 @@ Future<void> main(List<String> arguments) async {
         };
   final copied = <Map<String, Object?>>[];
   for (final target in selected.entries) {
+    final local = target.key == 'ios' || target.key == 'macos'
+        ? '${target.key}/.local/cubism_core'
+        : '.local/cubism_core/${target.key}';
     for (final asset in target.value.entries) {
       final source = File('${root.path}/${asset.value}');
       if (!await source.exists()) continue;
-      final output = File(
-        '${package.path}/.local/cubism_core/${target.key}/${asset.key}',
-      );
+      final output = File('${package.path}/$local/${asset.key}');
       await output.parent.create(recursive: true);
       await source.copy(output.path);
       copied.add({
@@ -81,7 +82,7 @@ Future<void> main(List<String> arguments) async {
   }
   if (copied.isEmpty) throw StateError('cubism_provision_no_library');
   if (selected.containsKey('ios') && Platform.isMacOS) {
-    final ios = Directory('${package.path}/.local/cubism_core/ios');
+    final ios = Directory('${package.path}/ios/.local/cubism_core');
     final simulator = '${ios.path}/libLive2DCubismCore-simulator.a';
     final lipo = await Process.run('xcrun', [
       'lipo',
@@ -108,6 +109,7 @@ Future<void> main(List<String> arguments) async {
       throw StateError('cubism_provision_xcframework:${build.stderr}');
   }
   final manifest = File('${package.path}/.local/cubism_core/provision.json');
+  await manifest.parent.create(recursive: true);
   await manifest.writeAsString(
     const JsonEncoder.withIndent('  ')
         .convert({'sdk': root.path, 'libraries': copied}),
