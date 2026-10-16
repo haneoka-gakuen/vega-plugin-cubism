@@ -8,6 +8,16 @@ const permittedWebRuntimeSource = (path) => {
   return normalized === "CUBISM-LICENSE.md" || /^(?:src|dist)\/web-runtime\/.+\.(?:d\.ts|js|mjs|ts)$/u.test(normalized);
 };
 
+const documentationBrandFiles = new Set([
+  "docs/brand/favicon.svg",
+  "docs/brand/icon-512.png",
+  "docs/brand/social.svg",
+  "docs/brand/social.png",
+]);
+
+const nativeAdapterSource =
+  /^(?:dart\/(?:lib|tool)\/.+\.dart|dart\/(?:android\/build\.gradle|(?:ios|macos)\/[^/]+\.podspec|(?:linux|windows)\/CMakeLists\.txt)|native\/motion-sync\/(?:src|jsc)\/.+\.(?:c|cpp|h|in|js))$/u;
+
 const restrictedDirectory =
   /^(?:atlases?|character-models?|core|cubism(?:-?sdk)?|expressions?|framework|game-assets?|live2d|models?|motions?|physics|poses?|samples?|sdk|skeletons?|spine(?:-runtimes?)?|textures?|userdata|vendor)$/iu;
 
@@ -35,7 +45,12 @@ const bundledRuntimeMarker =
 
 export const restrictedCubismPathReason = (path) => {
   const normalized = normalizePath(path);
-  if (permittedWebRuntimeSource(normalized)) return null;
+  if (
+    permittedWebRuntimeSource(normalized) ||
+    documentationBrandFiles.has(normalized) ||
+    normalized === "native/motion-sync/vendor/miniaudio.h"
+  )
+    return null;
   const segments = normalized.split("/").filter(Boolean);
   const basename = segments.at(-1) ?? "";
 
@@ -58,6 +73,11 @@ export const restrictedCubismPathReason = (path) => {
 
 export const restrictedCubismContentReason = (bytes, path = "") => {
   const body = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+  if (documentationBrandFiles.has(normalizePath(path)) && path.endsWith(".png")) {
+    return body.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+      ? null
+      : "invalid documentation PNG signature";
+  }
   if (body.some((byte) => byte === 0 || byte === 0x7f || byte < 0x09 || (byte > 0x0d && byte < 0x20))) {
     return "binary payload";
   }
@@ -68,11 +88,12 @@ export const restrictedCubismContentReason = (bytes, path = "") => {
   } catch {
     return "binary payload";
   }
-  if (permittedWebRuntimeSource(path) || ["README.md", "NOTICE.md", "SECURITY.md"].includes(normalizePath(path))) return null;
+  if (permittedWebRuntimeSource(path) || ["README.md", "NOTICE.md", "SECURITY.md"].includes(normalizePath(path)))
+    return null;
   if (live2dCopyright.test(text)) return "Live2D copyright signature";
   if (live2dLicense.test(text)) return "Live2D license signature";
   if (cubismSdkProduct.test(text)) return "Live2D Cubism SDK product signature";
-  if (bundledRuntimeMarker.test(text)) {
+  if (bundledRuntimeMarker.test(text) && !nativeAdapterSource.test(normalizePath(path))) {
     return "Live2D Cubism SDK/Core runtime signature";
   }
   return null;

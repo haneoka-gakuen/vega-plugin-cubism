@@ -125,21 +125,19 @@ const insideRoot = (path) => {
   );
 };
 
-const walkRepository = async (path, relativePath = "") => {
-  if (!insideRoot(path)) fail(`path escapes repository: ${path}`);
-  const info = await lstat(path);
-  if (info.isSymbolicLink()) fail(`symbolic links are not allowed: ${relativePath}`);
-  if (info.isDirectory()) {
-    for (const entry of await readdir(path)) {
-      if (!relativePath && ignoredRoots.has(entry)) continue;
-      await walkRepository(resolve(path, entry), relativePath ? `${relativePath}/${entry}` : entry);
-    }
-    return;
-  }
-  repositoryFiles.push(relativePath);
-};
-
-await walkRepository(root);
+const { stdout: repositoryPaths } = await promisify(execFile)(
+  "git",
+  ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+  { cwd: root, encoding: "utf8" },
+);
+for (const path of new Set(repositoryPaths.split("\0").filter(Boolean))) {
+  if (ignoredRoots.has(path.split("/")[0])) continue;
+  const absolute = resolve(root, path);
+  if (!insideRoot(absolute)) fail(`path escapes repository: ${path}`);
+  const info = await lstat(absolute);
+  if (info.isSymbolicLink()) fail(`symbolic links are not allowed: ${path}`);
+  if (info.isFile()) repositoryFiles.push(path);
+}
 const restrictedRepositoryFiles = repositoryFiles.filter((path) => restrictedCubismPathReason(path));
 if (restrictedRepositoryFiles.length > 0) {
   fail(`restricted SDK, runtime, model, or asset payload:\n${restrictedRepositoryFiles.join("\n")}`);
