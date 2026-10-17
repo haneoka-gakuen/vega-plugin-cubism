@@ -393,6 +393,7 @@ final class NativeCubismModel {
   late final NativeCubismCanvas canvas;
   List<_DrawableTopology> _topology = const [];
   List<Float32List> _positions = const [];
+  List<NativeCubismDrawable> _evaluated = const [];
   void setPartOpacity(String id, double value) {
     if (_disposed) throw StateError('native_cubism_disposed');
     final index = parts[id];
@@ -427,7 +428,12 @@ final class NativeCubismModel {
     core.resetFlags(pointer);
     core.update(pointer);
     final count = core.drawableCount(pointer);
-    core._validateClassicRenderState(pointer, count);
+    final dynamic = core.dynamicFlags(pointer);
+    if (_evaluated.length != count ||
+        _topology.isEmpty ||
+        dynamic.asTypedList(count).any((flags) => (flags & 16) != 0)) {
+      core._validateClassicRenderState(pointer, count);
+    }
     final names = core.drawableIds(pointer),
         tex = core.textureIndices(pointer),
         orders = core.renderOrders(pointer),
@@ -440,7 +446,6 @@ final class NativeCubismModel {
         triangles = core.indices(pointer),
         masks = core.masks(pointer),
         flags = core.constantFlags(pointer),
-        dynamic = core.dynamicFlags(pointer),
         multiply = core.multiplyColors(pointer),
         screen = core.screenColors(pointer);
     if (_topology.isEmpty && count > 0) {
@@ -479,36 +484,62 @@ final class NativeCubismModel {
       throw const FormatException('cubism_drawable_topology');
     final multiplyValues = multiply.asTypedList(count * 4);
     final screenValues = screen.asTypedList(count * 4);
-    return [
-      for (var index = 0; index < count; index++)
-        NativeCubismDrawable(
-          id: _topology[index].id,
-          sourceIndex: index,
-          textureIndex: _topology[index].textureIndex,
-          renderOrder: orders[index],
-          opacity: alpha[index],
-          flags: _topology[index].flags,
-          visible: (dynamic[index] & 1) != 0,
-          dynamicFlags: dynamic[index],
-          positions: vcounts[index] == 0
-              ? _positions[index]
-              : _positions[index].length != vcounts[index] * 2 ||
-                    (dynamic[index] & 32) != 0
-              ? (_positions[index] = Float32List.fromList(
-                  positions[index].asTypedList(vcounts[index] * 2),
-                ).asUnmodifiableView())
-              : _positions[index],
-          uvs: _topology[index].uvs,
-          indices: _topology[index].indices,
-          masks: _topology[index].masks,
-          multiplyColor: Float32List.fromList(
-            multiplyValues.sublist(index * 4, index * 4 + 4),
+    final result = <NativeCubismDrawable>[];
+    for (var index = 0; index < count; index++) {
+      final previous = _evaluated.isEmpty ? null : _evaluated[index];
+      final topology = _topology[index];
+      final dynamicFlags = dynamic[index];
+      final vertices = vcounts[index] == 0
+          ? _positions[index]
+          : _positions[index].length != vcounts[index] * 2 ||
+                (dynamicFlags & 32) != 0
+          ? (_positions[index] = Float32List.fromList(
+              positions[index].asTypedList(vcounts[index] * 2),
+            ).asUnmodifiableView())
+          : _positions[index];
+      final colorChanged = previous == null || (dynamicFlags & 64) != 0;
+      final multiplyColor = colorChanged
+          ? multiplyValues
+                .sublist(index * 4, index * 4 + 4)
+                .asUnmodifiableView()
+          : previous.multiplyColor;
+      final screenColor = colorChanged
+          ? screenValues.sublist(index * 4, index * 4 + 4).asUnmodifiableView()
+          : previous.screenColor;
+      final renderOrder = orders[index], opacity = alpha[index];
+      final visible = (dynamicFlags & 1) != 0;
+      if (previous != null &&
+          previous.renderOrder == renderOrder &&
+          identical(previous.opacity, opacity) &&
+          previous.dynamicFlags == dynamicFlags &&
+          previous.visible == visible &&
+          identical(previous.positions, vertices) &&
+          identical(previous.multiplyColor, multiplyColor) &&
+          identical(previous.screenColor, screenColor)) {
+        result.add(previous);
+      } else {
+        result.add(
+          NativeCubismDrawable(
+            id: topology.id,
+            sourceIndex: index,
+            textureIndex: topology.textureIndex,
+            renderOrder: renderOrder,
+            opacity: opacity,
+            flags: topology.flags,
+            visible: visible,
+            dynamicFlags: dynamicFlags,
+            positions: vertices,
+            uvs: topology.uvs,
+            indices: topology.indices,
+            masks: topology.masks,
+            multiplyColor: multiplyColor,
+            screenColor: screenColor,
           ),
-          screenColor: Float32List.fromList(
-            screenValues.sublist(index * 4, index * 4 + 4),
-          ),
-        ),
-    ];
+        );
+      }
+    }
+    _evaluated = List.of(result, growable: false);
+    return result;
   }
 
   void dispose() {
