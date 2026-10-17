@@ -1,0 +1,92 @@
+{
+  "schema": "cubism-motion-sync-sdk-v1",
+  "sdk": "Cubism SDK MotionSync Plugin for Native 5-r.2",
+  "url": "https://cubism.live2d.com/motion-sync-plugin/bin/CubismSdkMotionSyncPluginForNative-5-r.2.zip",
+  "archiveSha256": "59d40e0664a092011b1305f393ad547435f8accd3f12ca0d27e5e842aa6fd5d4",
+  "engineVersion": 83886084,
+  "libraries": [
+    {
+      "target": "windows/x86",
+      "name": "Live2DCubismMotionSyncEngine_CRI.lib",
+      "source": "Core/CRI/dll/Windows/x86/Live2DCubismMotionSyncEngine_CRI.lib",
+      "bytes": 5308,
+      "sha256": "988d00eb1e2a7585b222b3394e489f5cb6be2f7ae87c26598ff6765943065de3"
+    },
+    {
+      "target": "windows/x86",
+      "name": "Live2DCubismMotionSyncEngine_CRI.dll",
+      "source": "Core/CRI/dll/Windows/x86/Live2DCubismMotionSyncEngine_CRI.dll",
+      "bytes": 525832,
+      "sha256": "83a49f09adeacfe5dab7478e3dfd56d3bc55c37c98e6090c28a6ac8b037c9acd"
+    },
+    {
+      "target": "windows/x64",
+      "name": "Live2DCubismMotionSyncEngine_CRI.lib",
+      "source": "Core/CRI/dll/Windows/x86_64/Live2DCubismMotionSyncEngine_CRI.lib",
+      "bytes": 5096,
+      "sha256": "bfc5e7cdbe359bd5e15e886602d360b78e7738f98a06714dce18eadaa3a03679"
+    },
+    {
+      "target": "windows/x64",
+      "name": "Live2DCubismMotionSyncEngine_CRI.dll",
+      "source": "Core/CRI/dll/Windows/x86_64/Live2DCubismMotionSyncEngine_CRI.dll",
+      "bytes": 542728,
+      "sha256": "9e474f589cfd025f1da5da923dccd7e029c3d407cb58745665eaa3611554211f"
+    },
+    {
+      "target": "android/x86",
+      "name": "libLive2DCubismMotionSyncEngine_CRI.so",
+      "source": "Core/CRI/dll/Android/x86/libLive2DCubismMotionSyncEngine_CRI.so",
+      "bytes": 468420,
+      "sha256": "1fce67b29e01dfb306ca6b52e343e98926d98f44e92c1a8e25ff35da564d4d85"
+    },
+    {
+      "target": "android/arm64-v8a",
+      "name": "libLive2DCubismMotionSyncEngine_CRI.so",
+      "source": "Core/CRI/dll/Android/arm64-v8a/libLive2DCubismMotionSyncEngine_CRI.so",
+      "bytes": 429048,
+      "sha256": "2162ca6af19907a4351c4498bffe26f737ab4e9904c6cb92c066adb89bece8cc"
+    },
+    {
+      "target": "android/x86_64",
+      "name": "libLive2DCubismMotionSyncEngine_CRI.so",
+      "source": "Core/CRI/dll/Android/x86_64/libLive2DCubismMotionSyncEngine_CRI.so",
+      "bytes": 457696,
+      "sha256": "bceb8430453a4fd072b349cfacf8c5af5a4f906aa248dc7b346a3caaf7dd3ab3"
+    },
+    {
+      "target": "macos",
+      "name": "libLive2DCubismMotionSyncEngine_CRI.dylib",
+      "source": "Core/CRI/dll/macOS/libLive2DCubismMotionSyncEngine_CRI.dylib",
+      "bytes": 920784,
+      "sha256": "097b62d2da4c525c130d233cdad90c4d5d1628306101c48faf2abc1730021e83"
+    },
+    {
+      "target": "ios/device",
+      "name": "libLive2DCubismMotionSyncEngine_CRI.a",
+      "source": "Core/CRI/lib/iOS/Release-iphoneos/libLive2DCubismMotionSyncEngine_CRI.a",
+      "bytes": 3881984,
+      "sha256": "7b04c4e8abba528d118fae59bb00344c87a23fadf1a47c2aa16a3057437bddbf"
+    },
+    {
+      "target": "ios/simulator",
+      "name": "libLive2DCubismMotionSyncEngine_CRI.a",
+      "source": "Core/CRI/lib/iOS/Release-iphonesimulator/libLive2DCubismMotionSyncEngine_CRI.a",
+      "bytes": 3887432,
+      "sha256": "451d242a9ae5cc1c29662a8ca24e4cd0c730c59be863da4d27b1fcff68262751"
+    },
+    {
+      "sdk": "legacy",
+      "target": "android/armeabi-v7a",
+      "name": "libLive2DCubismMotionSyncEngine_CRI.so",
+      "source": "Core/CRI/dll/Android/armeabi-v7a/libLive2DCubismMotionSyncEngine_CRI.so",
+      "bytes": 432024,
+      "sha256": "47d7ba15377ae6686295563d03807b66013dc3bff2115696f3c968a4d1fd3968"
+    }
+  ],
+  "legacySdk": {
+    "sdk": "Cubism SDK MotionSync Plugin for Native 5-r.1",
+    "url": "https://cubism.live2d.com/motion-sync-plugin/bin/CubismSdkMotionSyncPluginForNative-5-r.1.zip",
+    "archiveSha256": "c0bced3a71a7b6476d3a8af977940a98dd684d53d28c22b2d326e2078f867fdd"
+  }
+}

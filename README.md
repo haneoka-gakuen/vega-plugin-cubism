@@ -180,3 +180,30 @@ The adapter requires a separately licensed Live2D Cubism Core/runtime. Preserve
 [LICENSE](LICENSE), [CUBISM-LICENSE.md](CUBISM-LICENSE.md), and
 [NOTICE.md](NOTICE.md). Model files, textures, motions, and expressions retain
 the licenses granted by their authors.
+
+## Flutter Native MotionSync
+
+The Dart provider preserves its caller-owned playback clock, channel isolation,
+48 kHz mono PCM cache and authored viseme mapping. Android, iOS, macOS and
+Windows x64 use the official native DSP through Flutter Native Assets. Linux
+keeps its JavaScriptCoreGTK provider; Windows ARM64 has no official DSP.
+
+The pure Dart build hook downloads, verifies and caches the official SDK in its
+shared build output. Flutter consumers need Flutter/Dart and the native compiler
+toolchain; the application has no DSP provisioning step or Node dependency.
+Native R2 is pinned by archive and per-library SHA256. Android ARMv7 uses the
+matching Core 5.0.4 from official Native R1. Concurrent targets share a locked
+SDK cache; a warm build verifies and reuses its selected libraries.
+
+Native Assets resolves the 16 provider functions by asset ID, including iOS.
+The plugin owns library resolution and DSP mapping; the host supplies audio
+data and its media clock. DSP identity is independent of chapter identity.
+The native backend uses the pinned SDK binary. Core JavaScript bytes remain
+an input to the Linux JSC backend. Cubism model Core is installed separately
+with `dart run tool/provision.dart`.
+
+Official Core/CRI licenses and redistribution lists are included in the Flutter
+package assets. Native SDK binaries remain outside the source tree. The native
+header follows the Live2D Open Software License. The JSON tokenizer is jsmn,
+fixed at 25647e692c7906b96ffd2b05ca54c097948e879c, with its MIT notice in the
+header.

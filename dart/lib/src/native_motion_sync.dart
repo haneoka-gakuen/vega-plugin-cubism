@@ -5,6 +5,8 @@ import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 
+import 'native_motion_sync_bindings.dart' as bundled;
+
 final class MotionSyncPcmData {
   const MotionSyncPcmData(this.samples, this.sampleRate);
   final Float32List samples;
@@ -14,120 +16,132 @@ final class MotionSyncPcmData {
       Duration(microseconds: (frames * 1000000 / sampleRate).round());
 }
 
-/// Optional MotionSync provider. The caller supplies the unchanged official Core
-/// bytes and authored mappings, while media clocks and model writes remain local.
+/// Native DSP or JSC MotionSync provider. JSC receives unchanged official Core
+/// bytes; authored mappings, media clocks and model writes remain caller-owned.
 final class NativeMotionSyncLibrary {
   NativeMotionSyncLibrary._(this._library);
+  NativeMotionSyncLibrary._bundled() : _library = null;
+  static bool requiresExternalCore({String? libraryPath}) =>
+      libraryPath != null || Platform.isLinux;
   factory NativeMotionSyncLibrary.open({String? libraryPath}) =>
-      NativeMotionSyncLibrary._(
-        libraryPath != null
-            ? DynamicLibrary.open(libraryPath)
-            : Platform.isIOS
-            ? DynamicLibrary.process()
-            : DynamicLibrary.open(
-                Platform.isWindows
-                    ? 'cubism_motion_sync.dll'
-                    : Platform.isMacOS
-                    ? 'libcubism_motion_sync.dylib'
-                    : 'libcubism_motion_sync.so',
-              ),
-      );
-  final DynamicLibrary _library;
-  late final _create = _library
-      .lookupFunction<
-        Pointer<Void> Function(Pointer<Uint8>, Size),
-        Pointer<Void> Function(Pointer<Uint8>, int)
-      >('csm_ms_create');
-  late final _destroy = _library
-      .lookupFunction<
-        Void Function(Pointer<Void>),
-        void Function(Pointer<Void>)
-      >('csm_ms_destroy');
-  late final _version = _library
-      .lookupFunction<
-        Uint32 Function(Pointer<Void>),
-        int Function(Pointer<Void>)
-      >('csm_ms_engine_version');
-  late final _memory = _library
-      .lookupFunction<
-        Uint64 Function(Pointer<Void>),
-        int Function(Pointer<Void>)
-      >('csm_ms_memory_bytes');
-  late final _createContext = _library
-      .lookupFunction<
-        Uint32 Function(Pointer<Void>, Pointer<Uint8>, Size, Uint32),
-        int Function(Pointer<Void>, Pointer<Uint8>, int, int)
-      >('csm_ms_context_create');
-  late final _required = _library
-      .lookupFunction<
-        Uint32 Function(Pointer<Void>, Uint32),
-        int Function(Pointer<Void>, int)
-      >('csm_ms_context_require_samples');
-  late final _valueCount = _library
-      .lookupFunction<
-        Uint32 Function(Pointer<Void>, Uint32),
-        int Function(Pointer<Void>, int)
-      >('csm_ms_context_values_count');
-  late final _clear = _library
-      .lookupFunction<
-        Int32 Function(Pointer<Void>, Uint32, Pointer<Double>, Size),
-        int Function(Pointer<Void>, int, Pointer<Double>, int)
-      >('csm_ms_context_clear');
-  late final _analyze = _library
-      .lookupFunction<
-        Int32 Function(
-          Pointer<Void>,
-          Uint32,
-          Pointer<Float>,
-          Size,
-          Pointer<Double>,
-          Size,
-          Pointer<Uint32>,
-        ),
-        int Function(
-          Pointer<Void>,
-          int,
-          Pointer<Float>,
-          int,
-          Pointer<Double>,
-          int,
-          Pointer<Uint32>,
+      requiresExternalCore(libraryPath: libraryPath)
+      ? NativeMotionSyncLibrary._(
+          DynamicLibrary.open(libraryPath ?? 'libcubism_motion_sync.so'),
         )
-      >('csm_ms_context_analyze');
-  late final _deleteContext = _library
-      .lookupFunction<
-        Int32 Function(Pointer<Void>, Uint32),
-        int Function(Pointer<Void>, int)
-      >('csm_ms_context_delete');
-  late final _error = _library
-      .lookupFunction<Pointer<Utf8> Function(), Pointer<Utf8> Function()>(
-        'csm_ms_last_error',
-      );
-  late final _decode = _library
-      .lookupFunction<
-        Pointer<Void> Function(Pointer<Uint8>, Size),
-        Pointer<Void> Function(Pointer<Uint8>, int)
-      >('csm_ms_pcm_decode');
-  late final _pcmFrames = _library
-      .lookupFunction<
-        Uint64 Function(Pointer<Void>),
-        int Function(Pointer<Void>)
-      >('csm_ms_pcm_frames');
-  late final _pcmRate = _library
-      .lookupFunction<
-        Uint32 Function(Pointer<Void>),
-        int Function(Pointer<Void>)
-      >('csm_ms_pcm_sample_rate');
-  late final _pcmSamples = _library
-      .lookupFunction<
-        Pointer<Float> Function(Pointer<Void>),
-        Pointer<Float> Function(Pointer<Void>)
-      >('csm_ms_pcm_samples');
-  late final _pcmFree = _library
-      .lookupFunction<
-        Void Function(Pointer<Void>),
-        void Function(Pointer<Void>)
-      >('csm_ms_pcm_free');
+      : NativeMotionSyncLibrary._bundled();
+  final DynamicLibrary? _library;
+  late final _create = _library == null
+      ? bundled.create
+      : _library!.lookupFunction<
+          Pointer<Void> Function(Pointer<Uint8>, Size),
+          Pointer<Void> Function(Pointer<Uint8>, int)
+        >('csm_ms_create');
+  late final _destroy = _library == null
+      ? bundled.destroy
+      : _library!.lookupFunction<
+          Void Function(Pointer<Void>),
+          void Function(Pointer<Void>)
+        >('csm_ms_destroy');
+  late final _version = _library == null
+      ? bundled.version
+      : _library!.lookupFunction<
+          Uint32 Function(Pointer<Void>),
+          int Function(Pointer<Void>)
+        >('csm_ms_engine_version');
+  late final _memory = _library == null
+      ? bundled.memory
+      : _library!.lookupFunction<
+          Uint64 Function(Pointer<Void>),
+          int Function(Pointer<Void>)
+        >('csm_ms_memory_bytes');
+  late final _createContext = _library == null
+      ? bundled.createContext
+      : _library!.lookupFunction<
+          Uint32 Function(Pointer<Void>, Pointer<Uint8>, Size, Uint32),
+          int Function(Pointer<Void>, Pointer<Uint8>, int, int)
+        >('csm_ms_context_create');
+  late final _required = _library == null
+      ? bundled.requiredSamples
+      : _library!.lookupFunction<
+          Uint32 Function(Pointer<Void>, Uint32),
+          int Function(Pointer<Void>, int)
+        >('csm_ms_context_require_samples');
+  late final _valueCount = _library == null
+      ? bundled.valueCount
+      : _library!.lookupFunction<
+          Uint32 Function(Pointer<Void>, Uint32),
+          int Function(Pointer<Void>, int)
+        >('csm_ms_context_values_count');
+  late final _clear = _library == null
+      ? bundled.clearContext
+      : _library!.lookupFunction<
+          Int32 Function(Pointer<Void>, Uint32, Pointer<Double>, Size),
+          int Function(Pointer<Void>, int, Pointer<Double>, int)
+        >('csm_ms_context_clear');
+  late final _analyze = _library == null
+      ? bundled.analyze
+      : _library!.lookupFunction<
+          Int32 Function(
+            Pointer<Void>,
+            Uint32,
+            Pointer<Float>,
+            Size,
+            Pointer<Double>,
+            Size,
+            Pointer<Uint32>,
+          ),
+          int Function(
+            Pointer<Void>,
+            int,
+            Pointer<Float>,
+            int,
+            Pointer<Double>,
+            int,
+            Pointer<Uint32>,
+          )
+        >('csm_ms_context_analyze');
+  late final _deleteContext = _library == null
+      ? bundled.deleteContext
+      : _library!.lookupFunction<
+          Int32 Function(Pointer<Void>, Uint32),
+          int Function(Pointer<Void>, int)
+        >('csm_ms_context_delete');
+  late final _error = _library == null
+      ? bundled.lastError
+      : _library!
+            .lookupFunction<Pointer<Utf8> Function(), Pointer<Utf8> Function()>(
+              'csm_ms_last_error',
+            );
+  late final _decode = _library == null
+      ? bundled.pcmDecode
+      : _library!.lookupFunction<
+          Pointer<Void> Function(Pointer<Uint8>, Size),
+          Pointer<Void> Function(Pointer<Uint8>, int)
+        >('csm_ms_pcm_decode');
+  late final _pcmFrames = _library == null
+      ? bundled.pcmFrames
+      : _library!.lookupFunction<
+          Uint64 Function(Pointer<Void>),
+          int Function(Pointer<Void>)
+        >('csm_ms_pcm_frames');
+  late final _pcmRate = _library == null
+      ? bundled.pcmRate
+      : _library!.lookupFunction<
+          Uint32 Function(Pointer<Void>),
+          int Function(Pointer<Void>)
+        >('csm_ms_pcm_sample_rate');
+  late final _pcmSamples = _library == null
+      ? bundled.pcmSamples
+      : _library!.lookupFunction<
+          Pointer<Float> Function(Pointer<Void>),
+          Pointer<Float> Function(Pointer<Void>)
+        >('csm_ms_pcm_samples');
+  late final _pcmFree = _library == null
+      ? bundled.pcmFree
+      : _library!.lookupFunction<
+          Void Function(Pointer<Void>),
+          void Function(Pointer<Void>)
+        >('csm_ms_pcm_free');
   Never _fail() => throw StateError(_error().toDartString());
   Pointer<Uint8> _bytes(Uint8List bytes) {
     final pointer = calloc<Uint8>(bytes.length);
@@ -136,10 +150,12 @@ final class NativeMotionSyncLibrary {
   }
 
   NativeMotionSyncEngine createEngine(Uint8List officialCoreBytes) {
-    if (officialCoreBytes.isEmpty) {
+    if (_library != null && officialCoreBytes.isEmpty) {
       throw ArgumentError('motion_sync_core_bytes');
     }
-    final input = _bytes(officialCoreBytes);
+    final Pointer<Uint8> input = officialCoreBytes.isEmpty
+        ? nullptr
+        : _bytes(officialCoreBytes);
     try {
       final engine = _create(input, officialCoreBytes.length);
       if (engine == nullptr) {
@@ -147,7 +163,7 @@ final class NativeMotionSyncLibrary {
       }
       return NativeMotionSyncEngine._(this, engine);
     } finally {
-      calloc.free(input);
+      if (input != nullptr) calloc.free(input);
     }
   }
 

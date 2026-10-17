@@ -46,13 +46,21 @@ final class MotionSyncController {
     : _owner = owner,
       _channel = channel;
 
+  /// The default native DSP is bundled. JSC and explicit legacy library paths
+  /// consume host-provided official Core bytes.
+  static bool requiresExternalCore({String? libraryPath}) =>
+      NativeMotionSyncLibrary.requiresExternalCore(libraryPath: libraryPath);
+
   static Future<MotionSyncController> open({
-    required Uint8List coreBytes,
+    Uint8List? coreBytes,
     String? libraryPath,
     int maxCachedPcmBytes = 32 * 1024 * 1024,
     int maxCachedClips = 8,
   }) async {
-    if (coreBytes.isEmpty || maxCachedPcmBytes < 1 || maxCachedClips < 1) {
+    if ((requiresExternalCore(libraryPath: libraryPath) &&
+            (coreBytes == null || coreBytes.isEmpty)) ||
+        maxCachedPcmBytes < 1 ||
+        maxCachedClips < 1) {
       throw ArgumentError('motion_sync_worker_config');
     }
     final controller = MotionSyncController._();
@@ -64,7 +72,7 @@ final class MotionSyncController {
         _motionSyncWorker,
         _WorkerInit(
           controller._responses.sendPort,
-          TransferableTypedData.fromList([coreBytes]),
+          TransferableTypedData.fromList([coreBytes ?? Uint8List(0)]),
           libraryPath,
           maxCachedPcmBytes,
           maxCachedClips,
