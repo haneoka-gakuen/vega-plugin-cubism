@@ -15,6 +15,15 @@ const documentationBrandFiles = new Set([
   "docs/brand/social.png",
 ]);
 
+const nativeSourceAndNotices = new Set([
+  "native/motion-sync/vendor/jsmn.h",
+  "native/motion-sync/native/Live2DCubismMotionSyncEngine.h",
+  "dart/assets/motion_sync/5-r.1-CRI-LICENSE.md",
+  "dart/assets/motion_sync/5-r.1-REDISTRIBUTABLES.txt",
+  "dart/assets/motion_sync/5-r.2-CRI-LICENSE.md",
+  "dart/assets/motion_sync/5-r.2-REDISTRIBUTABLES.txt",
+]);
+
 const nativeAdapterSource =
   /^(?:dart\/(?:lib|tool)\/.+\.dart|dart\/(?:android\/build\.gradle|(?:ios|macos)\/[^/]+\.podspec|(?:linux|windows)\/CMakeLists\.txt)|native\/motion-sync\/(?:src|jsc)\/.+\.(?:c|cpp|h|in|js))$/u;
 
@@ -48,6 +57,7 @@ export const restrictedCubismPathReason = (path) => {
   if (
     permittedWebRuntimeSource(normalized) ||
     documentationBrandFiles.has(normalized) ||
+    nativeSourceAndNotices.has(normalized) ||
     normalized === "native/motion-sync/vendor/miniaudio.h"
   )
     return null;
@@ -88,7 +98,11 @@ export const restrictedCubismContentReason = (bytes, path = "") => {
   } catch {
     return "binary payload";
   }
-  if (permittedWebRuntimeSource(path) || ["README.md", "NOTICE.md", "SECURITY.md"].includes(normalizePath(path)))
+  if (
+    permittedWebRuntimeSource(path) ||
+    nativeSourceAndNotices.has(normalizePath(path)) ||
+    ["README.md", "NOTICE.md", "SECURITY.md"].includes(normalizePath(path))
+  )
     return null;
   if (live2dCopyright.test(text)) return "Live2D copyright signature";
   if (live2dLicense.test(text)) return "Live2D license signature";
