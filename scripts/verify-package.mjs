@@ -28,14 +28,6 @@ const policies = {
     externalRuntime: true,
     forbidMedia: true,
   },
-  "@haneoka/vega-renderer-pixi": {
-    repository: "git+https://github.com/haneoka-gakuen/vega-renderer-pixi.git",
-    peerDependencies: ["@haneoka/vega", "pixi.js"],
-    allowedImports: ["@haneoka/vega", "pixi.js"],
-    forbiddenDependency: /(?:live2d|cubism|motionsync|@esotericsoftware|spine)/iu,
-    externalRuntime: false,
-    forbidMedia: false,
-  },
 };
 
 const policy = policies[manifest.name];

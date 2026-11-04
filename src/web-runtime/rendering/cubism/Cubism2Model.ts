@@ -44,6 +44,9 @@ interface Live2DModelWebGLC2 {
   isPremultipliedAlpha(): boolean;
   getDrawParam(): DrawParamWebGLC2;
   getModelContext(): ModelContextC2;
+  getPartsOpacity(index: number): number;
+  getDrawData(index: number): unknown;
+  getTransformedPoints(index: number): Float32Array | number[] | null;
 }
 
 interface DrawParamWebGLC2 {
@@ -61,6 +64,9 @@ interface ClipManagerC2 {
 
 interface ModelContextC2 {
   clipManager?: ClipManagerC2;
+  /** Parts and draw contexts in the pinned Cubism 2 Core. */
+  _$F2?: { _$p2(): { toString(): string } }[];
+  _$C2?(index: number): { _$IP: number; _$7s: number } | undefined;
 }
 
 interface AMotionC2 {
@@ -463,6 +469,11 @@ export class Cubism2Model implements StoryCharacterModel {
   private initialized = false;
   private pixelsPerUnitValue: number;
   private readonly hasExplicitPixelsPerUnit: boolean;
+  private framingAnchorCache?: {
+    head?: { x: number; y: number };
+    stomach?: { x: number; y: number };
+    eyeSpan?: number;
+  };
   private readonly canvasWorldHeight: number | null;
 
   private constructor(options: Cubism2ModelOptions) {
@@ -521,6 +532,7 @@ export class Cubism2Model implements StoryCharacterModel {
     // Save the model's authored defaults immediately after loading.
     // Each frame's `loadParam()` below restores this baseline before motion.
     model.saveParam();
+    model.update();
     this.liveModel = model;
     if (!this.hasExplicitPixelsPerUnit && this.canvasWorldHeight) {
       const canvasHeight = Math.max(0, finiteNumber(model.getCanvasHeight(), 0));
@@ -655,15 +667,67 @@ export class Cubism2Model implements StoryCharacterModel {
     /* Cubism 2 has no MotionSync; intentional no-op. */
   }
 
-  drawableBounds(): CubismDrawableBounds | null {
-    if (!this.liveModel) return null;
-    const width = Math.max(0, finiteNumber(this.liveModel.getCanvasWidth(), 0)) / this.pixelsPerUnitValue;
-    const height = Math.max(0, finiteNumber(this.liveModel.getCanvasHeight(), 0)) / this.pixelsPerUnitValue;
-    return { x: -width / 2, y: -height / 2, width, height };
+  private meshBounds(visibleOnly: boolean, parts?: ReadonlySet<number>): CubismDrawableBounds | null {
+    const model = this.liveModel;
+    if (!model) return null;
+    const context = model.getModelContext();
+    const centerX = model.getCanvasWidth() / 2,
+      centerY = model.getCanvasHeight() / 2;
+    let left = Infinity,
+      right = -Infinity,
+      bottom = Infinity,
+      top = -Infinity;
+    for (let index = 0; model.getDrawData(index); index++) {
+      const draw = context._$C2?.(index);
+      if (parts && (!draw || !parts.has(draw._$IP))) continue;
+      if (visibleOnly && draw && model.getPartsOpacity(draw._$IP) * (draw._$7s ?? 1) <= 0.001) continue;
+      const points = model.getTransformedPoints(index);
+      if (!points) continue;
+      for (let vertex = 0; vertex + 1 < points.length; vertex += 2) {
+        const x = (points[vertex]! - centerX) / this.pixelsPerUnitValue;
+        const y = (centerY - points[vertex + 1]!) / this.pixelsPerUnitValue;
+        left = Math.min(left, x);
+        right = Math.max(right, x);
+        bottom = Math.min(bottom, y);
+        top = Math.max(top, y);
+      }
+    }
+    return Number.isFinite(left) && right > left && top > bottom
+      ? { x: left, y: bottom, width: right - left, height: top - bottom }
+      : null;
+  }
+
+  drawableBounds(visibleOnly = true): CubismDrawableBounds | null {
+    return this.meshBounds(visibleOnly);
+  }
+
+  framingAnchors(): { head?: { x: number; y: number }; stomach?: { x: number; y: number }; eyeSpan?: number } {
+    if (this.framingAnchorCache) return this.framingAnchorCache;
+    const parts = this.liveModel?.getModelContext()._$F2 ?? [];
+    const center = (pattern: RegExp) => {
+      const selected = new Set(parts.flatMap((part, index) => (pattern.test(String(part._$p2())) ? [index] : [])));
+      const bounds = this.meshBounds(true, selected);
+      return bounds ? { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 } : undefined;
+    };
+    const leftEye = center(/(?:^|_)EYE_L(?:_|$)/iu),
+      rightEye = center(/(?:^|_)EYE_R(?:_|$)/iu);
+    this.framingAnchorCache = {
+      ...(leftEye && rightEye
+        ? {
+            eyeSpan: Math.abs(leftEye.x - rightEye.x),
+            head: { x: (leftEye.x + rightEye.x) / 2, y: (leftEye.y + rightEye.y) / 2 },
+          }
+        : { head: center(/(?:^|_)FACE(?:_|$)/iu) }),
+      stomach: center(/(?:^|_)(?:BODY|TORSO)(?:_|$)/iu),
+    };
+    return this.framingAnchorCache;
   }
 
   canvasBounds(): CubismDrawableBounds {
-    return this.drawableBounds() ?? { x: 0, y: 0, width: 0, height: 0 };
+    if (!this.liveModel) return { x: 0, y: 0, width: 0, height: 0 };
+    const width = Math.max(0, finiteNumber(this.liveModel.getCanvasWidth(), 0)) / this.pixelsPerUnitValue;
+    const height = Math.max(0, finiteNumber(this.liveModel.getCanvasHeight(), 0)) / this.pixelsPerUnitValue;
+    return { x: -width / 2, y: -height / 2, width, height };
   }
 
   async prepareMotion(name: string): Promise<boolean> {
@@ -1074,6 +1138,7 @@ export class Cubism2Model implements StoryCharacterModel {
   /** ADV Angle/Look are late controller overrides, after C2 physics. */
   private applyLateStoryParameters(model: Live2DModelWebGLC2, frame: CubismParameterFrame): void {
     if (frame.angleX != null) model.addToParamFloat(ANGLE_X_ID, frame.angleX);
+    if (frame.angleY != null) model.addToParamFloat(ANGLE_Y_ID, frame.angleY);
     if (frame.bodyAngleX != null) model.addToParamFloat(BODY_ANGLE_X_ID, frame.bodyAngleX);
     if (frame.lookX != null) model.setParamFloat(EYE_BALL_X_ID, frame.lookX);
     if (frame.lookY != null) model.setParamFloat(EYE_BALL_Y_ID, frame.lookY);

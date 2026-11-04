@@ -40,7 +40,7 @@ export interface OwnedAbortSignal {
 }
 
 export interface CubismModelResourceLoader {
-  loadArrayBuffer(url: string, signal?: AbortSignal): Promise<ArrayBuffer>;
+  loadArrayBuffer(url: string, signal?: AbortSignal, maxByteLength?: number): Promise<ArrayBuffer>;
   loadImage(url: string, signal?: AbortSignal): Promise<TexImageSource>;
   /** Keep resolver-local decoded images while this model owns the loader. */
   retain?(): () => void;
@@ -59,9 +59,9 @@ export interface CubismOptionalBytesLease {
 /** Structural subset of Vega's resource resolver used by the web runtime. */
 export interface CubismStoryResourceResolver {
   canLoad(source: string): boolean;
-  load(source: string, signal?: AbortSignal): Promise<Uint8Array>;
+  load(source: string, signal?: AbortSignal, maxByteLength?: number): Promise<Uint8Array>;
   /** Trusted immutable fast path introduced by Vega 0.1. */
-  loadSharedBytes?(source: string, signal?: AbortSignal): Promise<Readonly<Uint8Array>>;
+  loadSharedBytes?(source: string, signal?: AbortSignal, maxByteLength?: number): Promise<Readonly<Uint8Array>>;
   retainOptionalBytes?(
     source: string,
     options: { readonly signal?: AbortSignal; readonly expiresAt: number },
@@ -253,9 +253,44 @@ function abortError(url: string): Error {
   return error;
 }
 
-async function fetchArrayBuffer(url: string, signal: AbortSignal): Promise<ArrayBuffer> {
-  const response = await fetch(url, { signal });
-  return assertResponse(response, url).arrayBuffer();
+const validByteLimit = (value: unknown): number | undefined => {
+  const limit = Number(value);
+  return Number.isSafeInteger(limit) && limit > 0 ? limit : undefined;
+};
+
+async function fetchArrayBuffer(url: string, signal?: AbortSignal, maxByteLength?: number): Promise<ArrayBuffer> {
+  const response = assertResponse(await fetch(url, { signal }), url);
+  const limit = validByteLimit(maxByteLength);
+  if (!limit) return response.arrayBuffer();
+  if (Number(response.headers.get("content-length")) > limit) {
+    await response.body?.cancel();
+    throw new Error(`Resource exceeds the bounded byte limit: ${url}`);
+  }
+  if (!response.body) throw new Error(`Bounded resource response has no readable body: ${url}`);
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      total += next.value.byteLength;
+      if (total > limit) {
+        await reader.cancel();
+        throw new Error(`Resource exceeds the bounded byte limit: ${url}`);
+      }
+      chunks.push(next.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes.buffer;
 }
 
 function loadImage(url: string): Promise<TexImageSource> {
@@ -302,8 +337,18 @@ function waitForCachedResource<T>(pending: Promise<T>, signal: AbortSignal | und
   });
 }
 
-export function fetchCachedArrayBuffer(url: string, signal?: AbortSignal): Promise<ArrayBuffer> {
+export function fetchCachedArrayBuffer(
+  url: string,
+  signal?: AbortSignal,
+  maxByteLength?: number,
+): Promise<ArrayBuffer> {
   if (signal?.aborted) return Promise.reject(abortError(url));
+  const limit = validByteLimit(maxByteLength);
+  // Bounded callers (currently KTX2 uploads) must not attach to a previously
+  // cached unbounded request or retain a large fulfilled buffer merely to
+  // reject it after the fact. The bounded fetch owns its single request and
+  // enforces the cap while consuming the response stream.
+  if (limit) return fetchArrayBuffer(url, signal, limit);
   let entry = arrayBufferCache.get(url);
   if (!entry) {
     entry = {
@@ -385,6 +430,11 @@ function ownedArrayBuffer(bytes: Readonly<Uint8Array>): ArrayBuffer {
   // bytes or another model instance.
   return Uint8Array.from(bytes).buffer;
 }
+
+const resolverOwnsSource = (source: string): boolean => {
+  const scheme = /^[A-Za-z][A-Za-z0-9+.-]*:/u.exec(source)?.[0]?.slice(0, -1).toLowerCase();
+  return Boolean(scheme && !["http", "https", "data", "blob", "file"].includes(scheme));
+};
 
 function decodeImageBuffer(source: string, buffer: ArrayBuffer, signal?: AbortSignal): Promise<TexImageSource> {
   const objectUrl = URL.createObjectURL(new Blob([buffer], { type: cubismContentType(source) }));
@@ -505,13 +555,22 @@ export function cubismResourceLoaderFor(resources: CubismStoryResourceResolver):
       if (!entry.settled) entry.controller.abort();
     }
   };
-  const loadBuffer = (url: string, signal?: AbortSignal): Promise<ArrayBuffer> => {
-    if (!resources.canLoad(url)) return fetchCachedArrayBuffer(url, signal);
+  const loadBuffer = (url: string, signal?: AbortSignal, maxByteLength?: number): Promise<ArrayBuffer> => {
+    if (!resources.canLoad(url)) {
+      if (resolverOwnsSource(url)) return Promise.reject(new TypeError(`No resource adapter can load: ${url}`));
+      return fetchCachedArrayBuffer(url, signal, maxByteLength);
+    }
     // Vega already owns the bounded byte LRU and in-flight deduplication. Do
     // not retain a second unbounded ArrayBuffer map in this plugin.
     return Promise.resolve(
-      resources.loadSharedBytes ? resources.loadSharedBytes(url, signal) : resources.load(url, signal),
-    ).then(ownedArrayBuffer);
+      resources.loadSharedBytes
+        ? resources.loadSharedBytes(url, signal, maxByteLength)
+        : resources.load(url, signal, maxByteLength),
+    ).then((bytes) => {
+      const limit = validByteLimit(maxByteLength);
+      if (limit && bytes.byteLength > limit) throw new Error(`Resource exceeds the bounded byte limit: ${url}`);
+      return ownedArrayBuffer(bytes);
+    });
   };
   const loadDecodedImage = (url: string, signal?: AbortSignal): Promise<TexImageSource> => {
     if (signal?.aborted) return Promise.reject(abortError(url));
