@@ -53,6 +53,7 @@ const MOTION_PRIORITY_FORCE = 3;
 
 export interface CubismParameterFrame {
   angleX?: number;
+  angleY?: number;
   bodyAngleX?: number;
   lookX?: number;
   lookY?: number;
@@ -198,6 +199,11 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
   private readonly pausedMotionRequest = new PausedCubismRequest<CubismPlaybackRequest>();
   private readonly pausedExpressionRequest = new PausedCubismRequest<CubismPlaybackRequest>();
   private pixelsPerUnitValue = 1;
+  private framingAnchorCache?: {
+    head?: { x: number; y: number };
+    stomach?: { x: number; y: number };
+    eyeSpan?: number;
+  };
 
   private readonly gl: WebGL2RenderingContext;
   private readonly resourceAbort: OwnedAbortSignal;
@@ -843,6 +849,43 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     const width = Math.max(0.001, this._model.getCanvasWidth());
     const height = Math.max(0.001, this._model.getCanvasHeight());
     return { x: -width * 0.5, y: -height * 0.5, width, height };
+  }
+
+  framingAnchors(): { head?: { x: number; y: number }; stomach?: { x: number; y: number }; eyeSpan?: number } {
+    if (this.framingAnchorCache) return this.framingAnchorCache;
+    const model = this._model.getModel();
+    const center = (pattern: RegExp) => {
+      const selected = new Set(model.parts.ids.flatMap((id, index) => (pattern.test(id) ? [index] : [])));
+      let left = Infinity,
+        right = -Infinity,
+        bottom = Infinity,
+        top = -Infinity;
+      for (let index = 0; index < model.drawables.count; index++) {
+        let part = model.drawables.parentPartIndices[index];
+        while (part >= 0 && !selected.has(part)) part = model.parts.parentIndices?.[part] ?? -1;
+        if (part < 0 || model.drawables.opacities[index] <= 0.001) continue;
+        const vertices = model.drawables.vertexPositions[index];
+        for (let vertex = 0; vertex < vertices.length; vertex += 2) {
+          left = Math.min(left, vertices[vertex]!);
+          right = Math.max(right, vertices[vertex]!);
+          bottom = Math.min(bottom, vertices[vertex + 1]!);
+          top = Math.max(top, vertices[vertex + 1]!);
+        }
+      }
+      return Number.isFinite(left) ? { x: (left + right) / 2, y: (bottom + top) / 2 } : undefined;
+    };
+    const leftEye = center(/^(?:part)?eye_?l\d*$/iu),
+      rightEye = center(/^(?:part)?eye_?r\d*$/iu);
+    this.framingAnchorCache = {
+      ...(leftEye && rightEye
+        ? {
+            eyeSpan: Math.abs(leftEye.x - rightEye.x),
+            head: { x: (leftEye.x + rightEye.x) / 2, y: (leftEye.y + rightEye.y) / 2 },
+          }
+        : { head: center(/^(?:part)?face\d*$/iu) ?? center(/^(?:part)?head\d*$/iu) }),
+      stomach: center(/^(?:part)?(?:body1|body|torso|bust)$/iu),
+    };
+    return this.framingAnchorCache;
   }
 
   get pixelsPerUnit(): number {
@@ -1559,6 +1602,10 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     const angleXIndex = this.realParameterIndex(this.angleXId);
     if (frame.angleX != null && angleXIndex != null) {
       this._model.addParameterValueByIndex(angleXIndex, frame.angleX);
+    }
+    if (frame.angleY != null) {
+      const angleYIndex = this.realParameterIndex(this.angleYId);
+      if (angleYIndex != null) this._model.addParameterValueByIndex(angleYIndex, frame.angleY);
     }
     if (frame.bodyAngleX != null) {
       const addIndex = this.realParameterIndex(this.bodyAngleXAddId);
