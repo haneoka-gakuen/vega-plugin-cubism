@@ -48,14 +48,6 @@ The package requires Node 20 or newer, WebGL2 for the web renderer, and a
 separately licensed Cubism Core runtime. The default web runtime URLs are
 `/Core/live2dcubismcore.js` for Model3 and `/Core/live2d.min.js` for Cubism 2.
 
-The web renderer adapter exposes stable `framingAnchors()` measurements from
-eye, face and torso mesh parts. Cubism 2 computes its initial pose before
-geometry is exposed, and distinguishes drawable bounds from canvas bounds.
-Its part and draw-context lookup follows the pinned Core's internal layout;
-update that lookup together with a Cubism 2 Core upgrade. Model3 uses the
-Core's parent-part indices and drawable vertices, as described in the
-[Live2D model manual](https://docs.live2d.com/en/cubism-sdk-manual/model-web/).
-
 ## Vega integration
 
 Configure the runtime adapter, install it with the Three renderer, and describe
