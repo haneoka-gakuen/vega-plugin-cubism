@@ -27,6 +27,46 @@ const ShaderCount = 10; // シェーダーの数 = マスク生成用 + (通常�
  * WebGL用のシェーダープログラムを生成・破棄するクラス
  */
 export class CubismShader_WebGL {
+  private readonly _shaderVariants = new Map<number, csmVector<CubismShaderSet>>();
+  private readonly _flatAmbient = new WeakMap<object, boolean>();
+  private _activeVariant = -1;
+
+  private isFlatWhiteAmbient(lighting): boolean {
+    let flat = this._flatAmbient.get(lighting);
+    if (flat === undefined) {
+      const sh = lighting.sphericalHarmonics;
+      flat = [sh.ar, sh.ag, sh.ab].every((value) => value[0] === 0 && value[1] === 0 && value[2] === 0 && value[3] === 1) &&
+        [sh.br, sh.bg, sh.bb, sh.c].every((value) => value.every((component) => component === 0));
+      this._flatAmbient.set(lighting, flat);
+    }
+    return flat;
+  }
+
+  private selectShaderVariant(renderer: CubismRenderer_WebGL): void {
+    const multiply = renderer.getUnityAdvMultiplyTextureParameters();
+    const key = Number(multiply.enabled && multiply.intensity !== 0) |
+      (Number(this.isFlatWhiteAmbient(renderer.getUnityAdvLightingState())) << 1);
+    if (key === this._activeVariant && this._shaderSets.getSize() > 0) return;
+    if (this._shaderSets.getSize() > 0) this._shaderVariants.set(this._activeVariant, this._shaderSets);
+    this._activeVariant = key;
+    let shaders = this._shaderVariants.get(key);
+    if (!shaders) {
+      shaders = new csmVector<CubismShaderSet>();
+      this._shaderSets = shaders;
+      this.generateShaders();
+      this._shaderVariants.set(key, shaders);
+    } else {
+      this._shaderSets = shaders;
+    }
+    this.invalidateDrawBindings();
+  }
+
+  private specializeFragment(source: string): string {
+    if (this._activeVariant < 0) return source;
+    return source
+      .replace('uniform float u_useMultiplyTexture;', `const float u_useMultiplyTexture = ${this._activeVariant & 1}.0;`)
+      .replace('uniform float u_flatWhiteAmbient;', `const float u_flatWhiteAmbient = ${(this._activeVariant >> 1) & 1}.0;`);
+  }
   /**
    * コンストラクタ
    */
@@ -237,9 +277,7 @@ export class CubismShader_WebGL {
       CubismLogError('NoPremultipliedAlpha is not allowed');
     }
 
-    if (this._shaderSets.getSize() == 0) {
-      this.generateShaders();
-    }
+    this.selectShaderVariant(renderer);
 
     // Blending
     let srcColor: number;
@@ -338,11 +376,8 @@ export class CubismShader_WebGL {
       .getValue(textureNo);
     this.bindTexture(0, textureId);
 
-    // The compatible fragment path samples `_MultiplyTex` even when the use
-    // flag is zero. Keep a complete texture bound; an absent property uses the
-    // drawable's main texture and is algebraically ignored.
-    const multiplyTexture = renderer.getUnityAdvMultiplyTexture();
-    this.bindTexture(2, multiplyTexture || textureId);
+    if (shaderSet.samplerMultiplyTextureLocation !== null)
+      this.bindTexture(2, renderer.getUnityAdvMultiplyTexture() || textureId);
     if (!uploadState.samplerUnitsInitialized) {
       this.gl.uniform1i(shaderSet.samplerTexture0Location, 0);
       this.gl.uniform1i(shaderSet.samplerMultiplyTextureLocation, 2);
@@ -410,8 +445,7 @@ export class CubismShader_WebGL {
     }
     if (uploadState.lightingToken !== lighting) {
       const sh = lighting.sphericalHarmonics;
-      const flatWhite = [sh.ar, sh.ag, sh.ab].every((value) => value[0] === 0 && value[1] === 0 && value[2] === 0 && value[3] === 1) &&
-        [sh.br, sh.bg, sh.bb, sh.c].every((value) => value.every((component) => component === 0));
+      const flatWhite = this.isFlatWhiteAmbient(lighting);
       this.gl.uniform1f(shaderSet.uniformFlatWhiteAmbientLocation, flatWhite ? 1 : 0);
       this.gl.uniform4fv(
         shaderSet.uniformMainLightPositionLocation,
@@ -603,14 +637,20 @@ export class CubismShader_WebGL {
    */
   public releaseShaderProgram(): void {
     const programs = new Set<WebGLProgram>();
-    for (let i = 0; i < this._shaderSets.getSize(); i++) {
-      const program = this._shaderSets.at(i)?.shaderProgram;
-      if (program) programs.add(program);
+    const variants = new Set(this._shaderVariants.values());
+    variants.add(this._shaderSets);
+    for (const shaders of variants) {
+      for (let i = 0; i < shaders.getSize(); i++) {
+        const program = shaders.at(i)?.shaderProgram;
+        if (program) programs.add(program);
+      }
+      shaders.clear();
     }
     if (!this._gpuContextInvalidated && this.gl && !this.gl.isContextLost()) {
       for (const program of programs) this.gl.deleteProgram(program);
     }
-    this._shaderSets.clear();
+    this._shaderVariants.clear();
+    this._activeVariant = -1;
     this._unityAdvProgramUploadStates = new WeakMap();
   }
 
@@ -631,15 +671,15 @@ export class CubismShader_WebGL {
 
     this._shaderSets.at(1).shaderProgram = this.loadShaderProgram(
       vertexShaderSrc,
-      fragmentShaderSrcPremultipliedAlpha
+      this.specializeFragment(fragmentShaderSrcPremultipliedAlpha)
     );
     this._shaderSets.at(2).shaderProgram = this.loadShaderProgram(
       vertexShaderSrcMasked,
-      fragmentShaderSrcMaskPremultipliedAlpha
+      this.specializeFragment(fragmentShaderSrcMaskPremultipliedAlpha)
     );
     this._shaderSets.at(3).shaderProgram = this.loadShaderProgram(
       vertexShaderSrcMasked,
-      fragmentShaderSrcMaskInvertedPremultipliedAlpha
+      this.specializeFragment(fragmentShaderSrcMaskInvertedPremultipliedAlpha)
     );
 
     // 加算も通常と同じシェーダーを利用する

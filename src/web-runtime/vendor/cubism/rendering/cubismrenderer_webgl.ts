@@ -380,6 +380,7 @@ export class CubismClippingManager_WebGL extends CubismClippingManager<CubismCli
 
           renderer.drawMeshWebGL(model, clipDrawIndex);
         }
+        renderer.flushDraws();
       }
 
       // --- 後処理 ---
@@ -960,8 +961,12 @@ export class CubismRenderer_WebGL extends CubismRenderer {
    */
   public drawMeshWebGL(model: Readonly<CubismModel>, index: number): void {
     const culling = this.isCulling();
-    const batch = this._geometry?.batching && !this.isGeneratingMask() && !this.isUsingHighPrecisionMask();
-    if (batch && this._geometry.canAppend(model, index, this.getClippingContextBufferForDraw(), culling)) {
+    const mask = this.isGeneratingMask();
+    const batch = this._geometry?.batching && !this.isUsingHighPrecisionMask();
+    const append = batch && (mask
+      ? this._geometry.canAppendMask(model, index, this.getClippingContextBufferForMask(), culling)
+      : this._geometry.canAppend(model, index, this.getClippingContextBufferForDraw(), culling));
+    if (append) {
       this._geometry.enqueue(index);
       this.setClippingContextBufferForDraw(null);
       this.setClippingContextBufferForMask(null);
@@ -999,6 +1004,10 @@ export class CubismRenderer_WebGL extends CubismRenderer {
     // 戻すと各drawableごとに不要なprogram切り替えが1回増える。
     this.setClippingContextBufferForDraw(null);
     this.setClippingContextBufferForMask(null);
+  }
+
+  public flushDraws(): void {
+    this._geometry?.flush();
   }
 
   protected saveProfile(): void {

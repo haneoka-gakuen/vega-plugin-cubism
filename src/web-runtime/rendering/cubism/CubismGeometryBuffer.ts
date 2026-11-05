@@ -20,6 +20,7 @@ export class CubismGeometryBuffer {
   private readonly vertex: WebGLBuffer;
   private readonly uv: WebGLBuffer;
   private readonly indices: WebGLBuffer;
+  private readonly indexType: number;
   private readonly positions: Float32Array;
   private readonly vertexOffsets: Uint32Array;
   private readonly indexOffsets: Uint32Array;
@@ -32,6 +33,7 @@ export class CubismGeometryBuffer {
   private readonly batchOffsets: Int32Array;
   private batchSize = 0;
   private batchClip: unknown;
+  private batchMask = false;
   private readonly batchState = new Float64Array(13).fill(NaN);
   private readonly multiplyColor = new CubismTextureColor();
   private readonly screenColor = new CubismTextureColor();
@@ -56,20 +58,23 @@ export class CubismGeometryBuffer {
       indices = 0;
     for (let index = 0; index < count; index++) {
       this.vertexOffsets[index] = vertices;
-      this.indexOffsets[index] = indices * Uint32Array.BYTES_PER_ELEMENT;
+      this.indexOffsets[index] = indices;
       this.counts[index] = model.getDrawableVertexIndexCount(index);
       vertices += model.getDrawableVertices(index).length;
       indices += this.counts[index];
     }
     this.positions = new Float32Array(vertices);
     const uvs = new Float32Array(vertices);
-    const topology = new Uint32Array(indices);
+    const IndexArray = vertices / 2 <= 65536 ? Uint16Array : Uint32Array;
+    this.indexType = IndexArray === Uint16Array ? gl.UNSIGNED_SHORT : gl.UNSIGNED_INT;
+    const topology = new IndexArray(indices);
     for (let index = 0; index < count; index++) {
       const offset = this.vertexOffsets[index];
       this.positions.set(model.getDrawableVertices(index), offset);
       uvs.set(model.getDrawableVertexUvs(index), offset);
       const source = model.getDrawableVertexIndices(index);
-      const start = this.indexOffsets[index] / Uint32Array.BYTES_PER_ELEMENT;
+      const start = this.indexOffsets[index];
+      this.indexOffsets[index] *= IndexArray.BYTES_PER_ELEMENT;
       for (let entry = 0; entry < source.length; entry++) topology[start + entry] = source[entry] + offset / 2;
       this.revisions[index] = model.getDrawableGeometryRevision(index);
     }
@@ -142,6 +147,7 @@ export class CubismGeometryBuffer {
     const opacity = model.getDrawableOpacity(index);
     const match =
       this.batchSize > 0 &&
+      !this.batchMask &&
       this.batchClip === clip &&
       state[0] === texture &&
       state[1] === blend &&
@@ -157,6 +163,7 @@ export class CubismGeometryBuffer {
       state[11] === screen.b &&
       state[12] === screen.a;
     if (!match) {
+      this.batchMask = false;
       this.batchClip = clip;
       state[0] = texture;
       state[1] = blend;
@@ -175,6 +182,19 @@ export class CubismGeometryBuffer {
     return match;
   }
 
+  canAppendMask(model: CubismModel, index: number, clip: unknown, culling: boolean): boolean {
+    const texture = model.getDrawableTextureIndex(index);
+    const match = this.batchSize > 0 && this.batchMask && this.batchClip === clip &&
+      this.batchState[0] === texture && this.batchState[3] === Number(culling);
+    if (!match) {
+      this.batchMask = true;
+      this.batchClip = clip;
+      this.batchState[0] = texture;
+      this.batchState[3] = Number(culling);
+    }
+    return match;
+  }
+
   enqueue(index: number): void {
     this.batchCounts[this.batchSize] = this.counts[index];
     this.batchOffsets[this.batchSize++] = this.indexOffsets[index];
@@ -186,19 +206,19 @@ export class CubismGeometryBuffer {
         this.gl.TRIANGLES,
         this.batchCounts,
         0,
-        this.gl.UNSIGNED_INT,
+        this.indexType,
         this.batchOffsets,
         0,
         this.batchSize,
       );
     } else if (this.batchSize === 1) {
-      this.gl.drawElements(this.gl.TRIANGLES, this.batchCounts[0], this.gl.UNSIGNED_INT, this.batchOffsets[0]);
+      this.gl.drawElements(this.gl.TRIANGLES, this.batchCounts[0], this.indexType, this.batchOffsets[0]);
     }
     this.batchSize = 0;
   }
 
   draw(index: number): void {
-    this.gl.drawElements(this.gl.TRIANGLES, this.counts[index], this.gl.UNSIGNED_INT, this.indexOffsets[index]);
+    this.gl.drawElements(this.gl.TRIANGLES, this.counts[index], this.indexType, this.indexOffsets[index]);
   }
 
   dispose(deleteGpuResources: boolean): void {
