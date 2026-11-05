@@ -65,7 +65,7 @@ export class CubismGeometryBuffer {
     }
     this.positions = new Float32Array(vertices);
     const uvs = new Float32Array(vertices);
-    const IndexArray = vertices / 2 <= 65536 ? Uint16Array : Uint32Array;
+    const IndexArray = vertices / 2 < 65536 ? Uint16Array : Uint32Array;
     this.indexType = IndexArray === Uint16Array ? gl.UNSIGNED_SHORT : gl.UNSIGNED_INT;
     const topology = new IndexArray(indices);
     for (let index = 0; index < count; index++) {
