@@ -6,6 +6,10 @@
  * that can be found at https://www.live2d.com/eula/live2d-open-software-license-agreement_en.html.
  */
 
+const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+const relativeTransform = new Float32Array(16);
+const multiplicationResult = new Float32Array(16);
+
 /**
  * 4x4の行列
  *
@@ -32,36 +36,26 @@ export class CubismMatrix44 {
     b: Float32Array,
     dst: Float32Array
   ): void {
-    const c: Float32Array = new Float32Array([
-      0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-      0.0
-    ]);
-
-    const n = 4;
-
-    for (let i = 0; i < n; ++i) {
-      for (let j = 0; j < n; ++j) {
-        for (let k = 0; k < n; ++k) {
-          c[j + i * 4] += a[k + i * 4] * b[j + k * 4];
-        }
+    const result = multiplicationResult;
+    for (let row = 0; row < 4; row++) {
+      const offset = row * 4;
+      const a0 = a[offset], a1 = a[offset + 1], a2 = a[offset + 2], a3 = a[offset + 3];
+      for (let column = 0; column < 4; column++) {
+        // Match the SDK's Float32 rounding after every accumulated product.
+        let value = Math.fround(0 + a0 * b[column]);
+        value = Math.fround(value + a1 * b[column + 4]);
+        value = Math.fround(value + a2 * b[column + 8]);
+        result[offset + column] = value + a3 * b[column + 12];
       }
     }
-
-    for (let i = 0; i < 16; ++i) {
-      dst[i] = c[i];
-    }
+    dst.set(result);
   }
 
   /**
    * 単位行列に初期化する
    */
   public loadIdentity(): void {
-    const c: Float32Array = new Float32Array([
-      1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0,
-      1.0
-    ]);
-
-    this.setMatrix(c);
+    this._tr.set(IDENTITY);
   }
 
   /**
@@ -70,9 +64,7 @@ export class CubismMatrix44 {
    * @param tr 16個の浮動小数点数で表される4x4の行列
    */
   public setMatrix(tr: Float32Array): void {
-    for (let i = 0; i < 16; ++i) {
-      this._tr[i] = tr[i];
-    }
+    this._tr.set(tr);
   }
 
   /**
@@ -160,25 +152,10 @@ export class CubismMatrix44 {
    * @param y Y軸の移動量
    */
   public translateRelative(x: number, y: number): void {
-    const tr1: Float32Array = new Float32Array([
-      1.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      1.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      1.0,
-      0.0,
-      x,
-      y,
-      0.0,
-      1.0
-    ]);
-
+    const tr1 = relativeTransform;
+    tr1.set(IDENTITY);
+    tr1[12] = x;
+    tr1[13] = y;
     CubismMatrix44.multiply(tr1, this._tr, this._tr);
   }
 
@@ -220,25 +197,10 @@ export class CubismMatrix44 {
    * @param y Y軸の拡大率
    */
   public scaleRelative(x: number, y: number): void {
-    const tr1: Float32Array = new Float32Array([
-      x,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      y,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      1.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      1.0
-    ]);
-
+    const tr1 = relativeTransform;
+    tr1.set(IDENTITY);
+    tr1[0] = x;
+    tr1[5] = y;
     CubismMatrix44.multiply(tr1, this._tr, this._tr);
   }
 

@@ -343,6 +343,26 @@ export class CubismClippingManager_WebGL extends CubismClippingManager<CubismCli
         clipContext._matrixForMask.setMatrix(this._tmpMatrixForMask.getArray());
         clipContext._matrixForDraw.setMatrix(this._tmpMatrixForDraw.getArray());
 
+        if (!this._clearedFrameBufferFlags.at(clipContext._bufferIndex)) {
+          this.gl.disable(this.gl.SCISSOR_TEST);
+          this.gl.clearColor(1.0, 1.0, 1.0, 1.0);
+          this.gl.clear(this.gl.COLOR_BUFFER_BIT);
+          this._clearedFrameBufferFlags.set(clipContext._bufferIndex, true);
+        }
+        // Outside this atlas cell the mask shader contributes zero. Retain a
+        // mediump guard band while rejecting those fragments before shading.
+        const maskSize = this._clippingMaskBufferSize;
+        const guard = Math.ceil(maskSize / 512);
+        const left = Math.floor(layoutBoundsOnTex01.x * maskSize) - guard;
+        const bottom = Math.floor(layoutBoundsOnTex01.y * maskSize) - guard;
+        this.gl.enable(this.gl.SCISSOR_TEST);
+        this.gl.scissor(
+          left,
+          bottom,
+          Math.ceil((layoutBoundsOnTex01.x + layoutBoundsOnTex01.width) * maskSize) + guard - left,
+          Math.ceil((layoutBoundsOnTex01.y + layoutBoundsOnTex01.height) * maskSize) + guard - bottom
+        );
+
         const clipDrawCount: number = clipContext._clippingIdCount;
         for (let i = 0; i < clipDrawCount; i++) {
           const clipDrawIndex: number = clipContext._clippingIdList[i];
@@ -354,15 +374,6 @@ export class CubismClippingManager_WebGL extends CubismClippingManager<CubismCli
             model.getDrawableCulling(clipDrawIndex) != false
           );
 
-          // マスクがクリアされていないなら処理する
-          if (!this._clearedFrameBufferFlags.at(clipContext._bufferIndex)) {
-            // マスクをクリアする
-            // (仮仕様) 1が無効（描かれない）領域、0が有効（描かれる）領域。（シェーダーCd*Csで0に近い値をかけてマスクを作る。1をかけると何も起こらない）
-            this.gl.clearColor(1.0, 1.0, 1.0, 1.0);
-            this.gl.clear(this.gl.COLOR_BUFFER_BIT);
-            this._clearedFrameBufferFlags.set(clipContext._bufferIndex, true);
-          }
-
           // 今回専用の変換を適用して描く
           // チャンネルも切り替える必要がある(A,R,G,B)
           renderer.setClippingContextBufferForMask(clipContext);
@@ -372,6 +383,7 @@ export class CubismClippingManager_WebGL extends CubismClippingManager<CubismCli
       }
 
       // --- 後処理 ---
+      this.gl.disable(this.gl.SCISSOR_TEST);
       this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, s_fbo); // 描画対象を戻す
       renderer.setClippingContextBufferForMask(null);
 
