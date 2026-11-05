@@ -1,23 +1,28 @@
 import { CubismFramework, LogLevel, Option } from "../../vendor/cubism/live2dcubismframework";
+import { loadCubismWasmCore } from "./CubismWasmCore";
 import { refreshCubismCoreViews } from "./CubismCoreHeap";
 
 export interface CubismWebRuntimeSources {
   readonly cubismCoreUrl?: string;
+  readonly cubismWasmUrl?: string;
   readonly cubism2CoreUrl?: string;
   readonly motionSyncCoreUrl?: string;
 }
 
 const runtimeSources: {
   cubismCoreUrl: string;
+  cubismWasmUrl: string;
   cubism2CoreUrl: string;
   motionSyncCoreUrl: string;
 } = {
   cubismCoreUrl: "/Core/live2dcubismcore.js",
+  cubismWasmUrl: "",
   cubism2CoreUrl: "/Core/live2d.min.js",
   motionSyncCoreUrl: "/Core/CRI/live2dcubismmotionsynccore.min.js",
 };
 
 export function configureCubismWebRuntime(sources: CubismWebRuntimeSources): void {
+  if (sources.cubismWasmUrl) runtimeSources.cubismWasmUrl = sources.cubismWasmUrl;
   if (sources.cubismCoreUrl) runtimeSources.cubismCoreUrl = sources.cubismCoreUrl;
   if (sources.cubism2CoreUrl) runtimeSources.cubism2CoreUrl = sources.cubism2CoreUrl;
   if (sources.motionSyncCoreUrl) runtimeSources.motionSyncCoreUrl = sources.motionSyncCoreUrl;
@@ -132,10 +137,16 @@ export async function ensureCubismFramework(signal?: AbortSignal): Promise<void>
         const globals = globalThis as typeof globalThis & {
           Live2DCubismCore?: unknown;
         };
-        state.corePromise = loadClassicScript(
-          runtimeSources.cubismCoreUrl,
-          () => Boolean(globals.Live2DCubismCore),
-          "live2d-cubism-core",
+        state.corePromise = (
+          runtimeSources.cubismWasmUrl && !globals.Live2DCubismCore
+            ? loadCubismWasmCore(runtimeSources.cubismWasmUrl).then((core) => {
+                globals.Live2DCubismCore = core;
+              })
+            : loadClassicScript(
+                runtimeSources.cubismCoreUrl,
+                () => Boolean(globals.Live2DCubismCore),
+                "live2d-cubism-core",
+              )
         ).catch((error: unknown) => {
           state.corePromise = null;
           throw error;

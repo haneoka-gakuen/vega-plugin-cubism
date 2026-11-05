@@ -76,6 +76,13 @@ export class DrawableCullingData {
 export class CubismModel {
   private _releaseCoreViews: (() => void) | null = null;
   private _geometryRevision = 0;
+  private readonly _parameterIndexById = new Map<string, number>();
+  private readonly _partIndexById = new Map<string, number>();
+  private _evaluatedParameters: Uint32Array | null = null;
+  private _evaluatedParts: Uint32Array | null = null;
+  private _parameterBits: Uint32Array | null = null;
+  private _partBits: Uint32Array | null = null;
+  private _evaluatedInputs = false;
   private readonly _drawableGeometryRevisions: Float64Array;
 
   public getGeometryRevision(): number {
@@ -88,8 +95,23 @@ export class CubismModel {
    * モデルのパラメータの更新
    */
   public update(): void {
-    // Update model
+    if (!this._parameterBits || this._parameterBits.buffer !== this._parameterValues.buffer) {
+      this._parameterBits = new Uint32Array(this._parameterValues.buffer, this._parameterValues.byteOffset, this._parameterValues.length);
+      this._partBits = new Uint32Array(this._partOpacities.buffer, this._partOpacities.byteOffset, this._partOpacities.length);
+    }
+    this._evaluatedParameters ??= new Uint32Array(this._parameterBits.length);
+    this._evaluatedParts ??= new Uint32Array(this._partBits.length);
+    // Retain exact input bits, including signed zero, before reusing a deformed pose.
+    let changed = !this._evaluatedInputs;
+    for (let index = 0; !changed && index < this._parameterBits.length; index++)
+      changed = this._parameterBits[index] !== this._evaluatedParameters[index];
+    for (let index = 0; !changed && index < this._partBits.length; index++)
+      changed = this._partBits[index] !== this._evaluatedParts[index];
+    if (!changed) return;
     this._model.update();
+    this._evaluatedParameters.set(this._parameterBits);
+    this._evaluatedParts.set(this._partBits);
+    this._evaluatedInputs = true;
     this._geometryRevision += 1;
     for (let index = 0; index < this._drawableGeometryRevisions.length; index++) {
       if (this.getDrawableDynamicFlagVertexPositionsDidChange(index))
@@ -140,16 +162,8 @@ export class CubismModel {
    * パラメータを保存する
    */
   public saveParameters(): void {
-    const parameterCount: number = this._model.parameters.count;
-    const savedParameterCount: number = this._savedParameters.getSize();
-
-    for (let i = 0; i < parameterCount; ++i) {
-      if (i < savedParameterCount) {
-        this._savedParameters.set(i, this._parameterValues[i]);
-      } else {
-        this._savedParameters.pushBack(this._parameterValues[i]);
-      }
-    }
+    this._savedParameters ??= new Float32Array(this._parameterValues.length);
+    this._savedParameters.set(this._parameterValues);
   }
 
   /**
@@ -721,22 +735,15 @@ export class CubismModel {
    * @return パーツのインデックス
    */
   public getPartIndex(partId: CubismIdHandle): number {
-    let partIndex: number;
-    const partCount: number = this._model.parts.count;
+    const existing = this._partIndexById.get(partId.getString().s);
+    if (existing !== undefined) return existing;
 
-    for (partIndex = 0; partIndex < partCount; ++partIndex) {
-      if (partId == this._partIds.at(partIndex)) {
-        return partIndex;
-      }
-    }
-
-    // モデルに存在していない場合、非存在パーツIDリスト内にあるかを検索し、そのインデックスを返す
     if (this._notExistPartId.isExist(partId)) {
       return this._notExistPartId.getValue(partId);
     }
 
     // 非存在パーツIDリストにない場合、新しく要素を追加する
-    partIndex = partCount + this._notExistPartId.getSize();
+    const partIndex = this._model.parts.count + this._notExistPartId.getSize();
     this._notExistPartId.setValue(partId, partIndex);
     this._notExistPartOpacities.appendKey(partIndex);
 
@@ -835,24 +842,15 @@ export class CubismModel {
    * @return パラメータのインデックス
    */
   public getParameterIndex(parameterId: CubismIdHandle): number {
-    let parameterIndex: number;
-    const idCount: number = this._model.parameters.count;
+    const existing = this._parameterIndexById.get(parameterId.getString().s);
+    if (existing !== undefined) return existing;
 
-    for (parameterIndex = 0; parameterIndex < idCount; ++parameterIndex) {
-      if (parameterId != this._parameterIds.at(parameterIndex)) {
-        continue;
-      }
-
-      return parameterIndex;
-    }
-
-    // モデルに存在していない場合、非存在パラメータIDリスト内を検索し、そのインデックスを返す
     if (this._notExistParameterId.isExist(parameterId)) {
       return this._notExistParameterId.getValue(parameterId);
     }
 
     // 非存在パラメータIDリストにない場合新しく要素を追加する
-    parameterIndex =
+    const parameterIndex =
       this._model.parameters.count + this._notExistParameterId.getSize();
 
     this._notExistParameterId.setValue(parameterId, parameterIndex);
@@ -1432,16 +1430,7 @@ export class CubismModel {
    * 保存されたパラメータの読み込み
    */
   public loadParameters(): void {
-    let parameterCount: number = this._model.parameters.count;
-    const savedParameterCount: number = this._savedParameters.getSize();
-
-    if (parameterCount > savedParameterCount) {
-      parameterCount = savedParameterCount;
-    }
-
-    for (let i = 0; i < parameterCount; ++i) {
-      this._parameterValues[i] = this._savedParameters.at(i);
-    }
+    if (this._savedParameters) this._parameterValues.set(this._savedParameters);
   }
 
   /**
@@ -1465,9 +1454,8 @@ export class CubismModel {
 
       this._parameterIds.prepareCapacity(parameterCount);
       for (let i = 0; i < parameterCount; ++i) {
-        this._parameterIds.pushBack(
-          CubismFramework.getIdManager().getId(parameterIds[i])
-        );
+        this._parameterIds.pushBack(CubismFramework.getIdManager().getId(parameterIds[i]));
+        this._parameterIndexById.set(parameterIds[i], i);
       }
     }
 
@@ -1477,9 +1465,8 @@ export class CubismModel {
 
       this._partIds.prepareCapacity(partCount);
       for (let i = 0; i < partCount; ++i) {
-        this._partIds.pushBack(
-          CubismFramework.getIdManager().getId(partIds[i])
-        );
+        this._partIds.pushBack(CubismFramework.getIdManager().getId(partIds[i]));
+        this._partIndexById.set(partIds[i], i);
       }
 
       this._userPartMultiplyColors.prepareCapacity(partCount);
@@ -1588,7 +1575,7 @@ export class CubismModel {
     this._parameterMaximumValues = null;
     this._parameterMinimumValues = null;
     this._partOpacities = null;
-    this._savedParameters = new csmVector<number>();
+    this._savedParameters = null;
     this._parameterIds = new csmVector<CubismIdHandle>();
     this._drawableIds = new csmVector<CubismIdHandle>();
     this._partIds = new csmVector<CubismIdHandle>();
@@ -1626,7 +1613,7 @@ export class CubismModel {
   private _notExistParameterValues: csmMap<number, number>; // 存在していないパラメータの値のリスト
   private _notExistParameterId: csmMap<CubismIdHandle, number>; // 存在していないパラメータIDのリスト
 
-  private _savedParameters: csmVector<number>; // 保存されたパラメータ
+  private _savedParameters: Float32Array | null; // 保存されたパラメータ
 
   private _isOverwrittenModelMultiplyColors: boolean; // SDK上でモデル全体の乗算色を上書きするか判定するフラグ
   private _isOverwrittenModelScreenColors: boolean; // SDK上でモデル全体のスクリーン色を上書きするか判定するフラグ

@@ -410,6 +410,9 @@ export class CubismShader_WebGL {
     }
     if (uploadState.lightingToken !== lighting) {
       const sh = lighting.sphericalHarmonics;
+      const flatWhite = [sh.ar, sh.ag, sh.ab].every((value) => value[0] === 0 && value[1] === 0 && value[2] === 0 && value[3] === 1) &&
+        [sh.br, sh.bg, sh.bb, sh.c].every((value) => value.every((component) => component === 0));
+      this.gl.uniform1f(shaderSet.uniformFlatWhiteAmbientLocation, flatWhite ? 1 : 0);
       this.gl.uniform4fv(
         shaderSet.uniformMainLightPositionLocation,
         lighting.mainLightPosition
@@ -1106,6 +1109,7 @@ export class CubismShader_WebGL {
         set.shaderProgram,
         's_multiplyTexture'
       );
+      set.uniformFlatWhiteAmbientLocation = this.gl.getUniformLocation(set.shaderProgram, 'u_flatWhiteAmbient');
       set.uniformLightingEnabledLocation = this.gl.getUniformLocation(
         set.shaderProgram,
         'u_lightingEnabled'
@@ -1510,6 +1514,7 @@ export class CubismShaderSet {
   uniformScreenColorLocation: WebGLUniformLocation; // シェーダープログラムに渡す変数のアドレス（ScreenColor）
   uniformObjectToWorldLocation: WebGLUniformLocation;
   samplerMultiplyTextureLocation: WebGLUniformLocation;
+  uniformFlatWhiteAmbientLocation: WebGLUniformLocation;
   uniformLightingEnabledLocation: WebGLUniformLocation;
   uniformMainLightPositionLocation: WebGLUniformLocation;
   uniformMainLightColorLocation: WebGLUniformLocation;
@@ -1621,8 +1626,9 @@ export const vertexShaderSrc = `
       vec4 lightAttenuation = u_additionalLightAttenuations[index];
       vec3 lightVector = -worldPosition.xyz * lightPosition.w + lightPosition.xyz;
       float distanceSquared = max(dot(lightVector, lightVector), 6.10351562e-05);
-      vec3 lightDirection = lightVector * inversesqrt(distanceSquared);
       float rangeFactor = distanceSquared * lightAttenuation.x;
+      if (rangeFactor >= 1.0) continue;
+      vec3 lightDirection = lightVector * inversesqrt(distanceSquared);
       float smoothFactor = max(1.0 - rangeFactor * rangeFactor, 0.0);
       float distanceAttenuation = smoothFactor * smoothFactor / distanceSquared;
       float spotAttenuation = clamp(
@@ -1686,8 +1692,9 @@ export const vertexShaderSrcMasked = `
       vec4 lightAttenuation = u_additionalLightAttenuations[index];
       vec3 lightVector = -worldPosition.xyz * lightPosition.w + lightPosition.xyz;
       float distanceSquared = max(dot(lightVector, lightVector), 6.10351562e-05);
-      vec3 lightDirection = lightVector * inversesqrt(distanceSquared);
       float rangeFactor = distanceSquared * lightAttenuation.x;
+      if (rangeFactor >= 1.0) continue;
+      vec3 lightDirection = lightVector * inversesqrt(distanceSquared);
       float smoothFactor = max(1.0 - rangeFactor * rangeFactor, 0.0);
       float distanceAttenuation = smoothFactor * smoothFactor / distanceSquared;
       float spotAttenuation = clamp(
@@ -1726,6 +1733,7 @@ const fragmentShaderSrcAdvCommon = `
   uniform sampler2D s_multiplyTexture;
   uniform vec4 u_multiplyColor;
   uniform float u_lightingEnabled;
+  uniform float u_flatWhiteAmbient;
   uniform vec4 u_mainLightPosition;
   uniform vec3 u_mainLightColor;
   uniform vec4 u_unitySHAr;
@@ -1779,7 +1787,8 @@ const fragmentShaderSrcAdvCommon = `
     vec3 lightFactor = vec3(1.0);
     if (u_lightingEnabled > 0.0) {
       vec3 normal = normalize(v_worldNormal);
-      vec3 ambient = unityLinearToSrgb(unityShadeSH9(normal));
+      vec3 ambient = unityLinearToSrgb(vec3(1.0));
+      if (u_flatWhiteAmbient < 0.5) ambient = unityLinearToSrgb(unityShadeSH9(normal));
       vec3 mainDirection = normalize(u_mainLightPosition.xyz);
       float mainNdotL = max(dot(normal, -mainDirection), 0.0);
       vec3 vertexLightDirection = normalize(v_vertexLightDirection);
