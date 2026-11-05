@@ -44,28 +44,41 @@ export class CubismShader_WebGL {
 
   private selectShaderVariant(renderer: CubismRenderer_WebGL): void {
     const multiply = renderer.getUnityAdvMultiplyTextureParameters();
+    const world = renderer.getUnityAdvObjectToWorld();
+    const normalZ = world[10];
+    const direction = renderer.getUnityAdvLightingState().mainLightPosition;
+    const axialLighting = world[8] === 0 && world[9] === 0 && normalZ >= 1 / 65536 && normalZ <= 65536 &&
+      direction[0] === 0 && direction[1] === 0 && direction[2] === -1;
     const key = Number(multiply.enabled && multiply.intensity !== 0) |
-      (Number(this.isFlatWhiteAmbient(renderer.getUnityAdvLightingState())) << 1);
+      (Number(this.isFlatWhiteAmbient(renderer.getUnityAdvLightingState())) << 1) | (Number(axialLighting) << 2);
     if (key === this._activeVariant && this._shaderSets.getSize() > 0) return;
     if (this._shaderSets.getSize() > 0) this._shaderVariants.set(this._activeVariant, this._shaderSets);
-    this._activeVariant = key;
-    let shaders = this._shaderVariants.get(key);
-    if (!shaders) {
-      shaders = new csmVector<CubismShaderSet>();
+    // Prime both orientations together; a camera/light tween must not compile
+    // its fallback program on the first visible rotated frame.
+    for (let variant = key & 3; variant <= (key & 3) + 4; variant += 4) {
+      if (this._shaderVariants.has(variant)) continue;
+      this._activeVariant = variant;
+      const shaders = new csmVector<CubismShaderSet>();
       this._shaderSets = shaders;
       this.generateShaders();
-      this._shaderVariants.set(key, shaders);
-    } else {
-      this._shaderSets = shaders;
+      this._shaderVariants.set(variant, shaders);
     }
+    this._activeVariant = key;
+    this._shaderSets = this._shaderVariants.get(key);
     this.invalidateDrawBindings();
   }
 
   private specializeFragment(source: string): string {
     if (this._activeVariant < 0) return source;
-    return source
+    let fragment = source
       .replace('uniform float u_useMultiplyTexture;', `const float u_useMultiplyTexture = ${this._activeVariant & 1}.0;`)
       .replace('uniform float u_flatWhiteAmbient;', `const float u_flatWhiteAmbient = ${(this._activeVariant >> 1) & 1}.0;`);
+    // Cubism supplies a constant +Z normal. Axis-aligned planes retain that
+    // direction through normalization and interpolation at every fragment.
+    if (this._activeVariant & 4) fragment = fragment
+      .replace('vec3 normal = normalize(v_worldNormal);', 'vec3 normal = vec3(0.0, 0.0, 1.0);')
+      .replace('vec3 mainDirection = normalize(u_mainLightPosition.xyz);', 'vec3 mainDirection = vec3(0.0, 0.0, -1.0);');
+    return fragment;
   }
   /**
    * コンストラクタ

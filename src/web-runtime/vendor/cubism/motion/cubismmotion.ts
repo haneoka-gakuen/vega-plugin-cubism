@@ -47,18 +47,18 @@ const IdNameOpacity = 'Opacity';
  * Cubism SDK R2 以前のモーションを再現させるなら true 、アニメータのモーションを正しく再現するなら false 。
  */
 const UseOldBeziersCurveMotion = false;
+const segmentPointViews = new WeakMap<CubismMotionSegment, CubismMotionPoint[]>();
 
-function lerpPoints(
-  a: CubismMotionPoint,
-  b: CubismMotionPoint,
+function bezierValue(
+  points: CubismMotionPoint[],
   t: number
-): CubismMotionPoint {
-  const result: CubismMotionPoint = new CubismMotionPoint();
-
-  result.time = a.time + (b.time - a.time) * t;
-  result.value = a.value + (b.value - a.value) * t;
-
-  return result;
+): number {
+  const p01 = points[0].value + (points[1].value - points[0].value) * t;
+  const p12 = points[1].value + (points[2].value - points[1].value) * t;
+  const p23 = points[2].value + (points[3].value - points[2].value) * t;
+  const p012 = p01 + (p12 - p01) * t;
+  const p123 = p12 + (p23 - p12) * t;
+  return p012 + (p123 - p012) * t;
 }
 
 function linearEvaluate(points: CubismMotionPoint[], time: number): number {
@@ -78,14 +78,7 @@ function bezierEvaluate(points: CubismMotionPoint[], time: number): number {
     t = 0.0;
   }
 
-  const p01: CubismMotionPoint = lerpPoints(points[0], points[1], t);
-  const p12: CubismMotionPoint = lerpPoints(points[1], points[2], t);
-  const p23: CubismMotionPoint = lerpPoints(points[2], points[3], t);
-
-  const p012: CubismMotionPoint = lerpPoints(p01, p12, t);
-  const p123: CubismMotionPoint = lerpPoints(p12, p23, t);
-
-  return lerpPoints(p012, p123, t).value;
+  return bezierValue(points, t);
 }
 
 function bezierEvaluateBinarySearch(
@@ -154,14 +147,7 @@ function bezierEvaluateBinarySearch(
     t = 1.0;
   }
 
-  const p01: CubismMotionPoint = lerpPoints(points[0], points[1], t);
-  const p12: CubismMotionPoint = lerpPoints(points[1], points[2], t);
-  const p23: CubismMotionPoint = lerpPoints(points[2], points[3], t);
-
-  const p012: CubismMotionPoint = lerpPoints(p01, p12, t);
-  const p123: CubismMotionPoint = lerpPoints(p12, p23, t);
-
-  return lerpPoints(p012, p123, t).value;
+  return bezierValue(points, t);
 }
 
 function bezierEvaluateCardanoInterpretation(
@@ -181,14 +167,7 @@ function bezierEvaluateCardanoInterpretation(
 
   const t: number = CubismMath.cardanoAlgorithmForBezier(a, b, c, d);
 
-  const p01: CubismMotionPoint = lerpPoints(points[0], points[1], t);
-  const p12: CubismMotionPoint = lerpPoints(points[1], points[2], t);
-  const p23: CubismMotionPoint = lerpPoints(points[2], points[3], t);
-
-  const p012: CubismMotionPoint = lerpPoints(p01, p12, t);
-  const p123: CubismMotionPoint = lerpPoints(p12, p23, t);
-
-  return lerpPoints(p012, p123, t).value;
+  return bezierValue(points, t);
 }
 
 function steppedEvaluate(points: CubismMotionPoint[], time: number): number {
@@ -215,7 +194,10 @@ export function evaluateCurve(
   let target = -1;
   const totalSegmentCount: number = curve.baseSegmentIndex + curve.segmentCount;
   let pointPosition = 0;
-  for (let i: number = curve.baseSegmentIndex; i < totalSegmentCount; ++i) {
+  let first = curve.baseSegmentIndex;
+  let last = totalSegmentCount;
+  while (first < last) {
+    const i = first + Math.floor((last - first) / 2);
     // Get first point of next segment.
     pointPosition =
       motionData.segments.at(i).basePointIndex +
@@ -224,12 +206,12 @@ export function evaluateCurve(
         ? 3
         : 1);
 
-    // Break if time lies within current segment.
+    // Keep the original strict boundary: a key's timestamp selects the next segment.
     if (motionData.points.at(pointPosition).time > time) {
-      target = i;
-      break;
-    }
+      last = i;
+    } else first = i + 1;
   }
+  if (first < totalSegmentCount) target = first;
 
   if (target == -1) {
     if (isCorrection && time < endTime) {
@@ -247,7 +229,13 @@ export function evaluateCurve(
 
   const segment: CubismMotionSegment = motionData.segments.at(target);
 
-  return segment.evaluate(motionData.points.get(segment.basePointIndex), time);
+  let points = segmentPointViews.get(segment);
+  if (!points) {
+    const count = segment.segmentType === CubismMotionSegmentType.CubismMotionSegmentType_Bezier ? 4 : 2;
+    points = Array.from({ length: count }, (_, offset) => motionData.points.at(segment.basePointIndex + offset));
+    segmentPointViews.set(segment, points);
+  }
+  return segment.evaluate(points, time);
 }
 
 /**
@@ -268,32 +256,23 @@ function correctEndPoint(
   time: number,
   endTime: number
 ): number {
-  const motionPoint: CubismMotionPoint[] = [
-    new CubismMotionPoint(),
-    new CubismMotionPoint()
-  ];
-  {
-    const src = motionData.points.at(endIndex);
-    motionPoint[0].time = src.time;
-    motionPoint[0].value = src.value;
-  }
-  {
-    const src = motionData.points.at(beginIndex);
-    motionPoint[1].time = endTime;
-    motionPoint[1].value = src.value;
-  }
+  const begin = motionData.points.at(beginIndex);
+  const end = motionData.points.at(endIndex);
 
   switch (
     motionData.segments.at(segmentIndex).segmentType as CubismMotionSegmentType
   ) {
     case CubismMotionSegmentType.CubismMotionSegmentType_Linear:
     case CubismMotionSegmentType.CubismMotionSegmentType_Bezier:
-    default:
-      return linearEvaluate(motionPoint, time);
+    default: {
+      let t = (time - end.time) / (endTime - end.time);
+      if (t < 0.0) t = 0.0;
+      return end.value + (begin.value - end.value) * t;
+    }
     case CubismMotionSegmentType.CubismMotionSegmentType_Stepped:
-      return steppedEvaluate(motionPoint, time);
+      return end.value;
     case CubismMotionSegmentType.CubismMotionSegmentType_InverseStepped:
-      return inverseSteppedEvaluate(motionPoint, time);
+      return begin.value;
   }
 }
 
