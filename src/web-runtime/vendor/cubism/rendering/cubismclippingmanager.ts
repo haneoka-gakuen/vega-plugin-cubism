@@ -6,7 +6,6 @@
  * that can be found at https://www.live2d.com/eula/live2d-open-software-license-agreement_en.html.
  */
 
-import { Constant } from '../live2dcubismframework';
 import { csmVector } from '../type/csmvector';
 import { csmRect } from '../type/csmrectf';
 import { CubismMatrix44 } from '../math/cubismmatrix44';
@@ -590,38 +589,7 @@ export abstract class CubismClippingManager<
       const drawableIndex: number =
         clippingContext._clippedDrawableIndexList[clippedDrawableIndex];
 
-      const drawableVertexCount: number =
-        model.getDrawableVertexCount(drawableIndex);
-      const drawableVertexes: Float32Array =
-        model.getDrawableVertices(drawableIndex);
-
-      let minX: number = Number.MAX_VALUE;
-      let minY: number = Number.MAX_VALUE;
-      let maxX: number = -Number.MAX_VALUE;
-      let maxY: number = -Number.MAX_VALUE;
-
-      const loop: number = drawableVertexCount * Constant.vertexStep;
-      for (
-        let pi: number = Constant.vertexOffset;
-        pi < loop;
-        pi += Constant.vertexStep
-      ) {
-        const x: number = drawableVertexes[pi];
-        const y: number = drawableVertexes[pi + 1];
-
-        if (x < minX) {
-          minX = x;
-        }
-        if (x > maxX) {
-          maxX = x;
-        }
-        if (y < minY) {
-          minY = y;
-        }
-        if (y > maxY) {
-          maxY = y;
-        }
-      }
+      const { minX, minY, maxX, maxY } = model.getDrawableBounds(drawableIndex);
 
       // 有効な点が一つも取れなかったのでスキップ
       if (minX == Number.MAX_VALUE) {

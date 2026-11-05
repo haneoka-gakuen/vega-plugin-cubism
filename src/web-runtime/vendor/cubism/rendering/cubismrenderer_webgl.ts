@@ -8,6 +8,7 @@
 
 import { CubismModel } from '../model/cubismmodel';
 import { CubismGeometryBuffer } from '../../../rendering/cubism/CubismGeometryBuffer';
+import { CubismDrawableVisibility } from '../../../rendering/cubism/CubismDrawableBounds';
 import { bindUnityCubismMissingNormal } from '../../../rendering/cubism/UnityCubismVertexDefaults';
 import { csmMap } from '../type/csmmap';
 import { csmRect } from '../type/csmrectf';
@@ -262,6 +263,7 @@ export class CubismClippingManager_WebGL extends CubismClippingManager<CubismCli
         // --- 実際に1つのマスクを描く ---
         const clipContext: CubismClippingContext_WebGL =
           this._clippingContextListForMask.at(clipIndex);
+        if (!renderer.isClippingContextVisible(clipContext)) continue;
         const allClipedDrawRect: csmRect = clipContext._allClippedDrawRect; // このマスクを使う、すべての描画オブジェクトの論理座標上の囲み矩形
         const layoutBoundsOnTex01: csmRect = clipContext._layoutBounds; // この中にマスクを収める
         const margin = 0.05; // モデル座標上の矩形を、適宜マージンを付けて使う
@@ -367,8 +369,7 @@ export class CubismClippingManager_WebGL extends CubismClippingManager<CubismCli
         for (let i = 0; i < clipDrawCount; i++) {
           const clipDrawIndex: number = clipContext._clippingIdList[i];
 
-          // Every mesh contributes to the rebuilt mask atlas, including
-          // unchanged meshes and models evaluated while off screen.
+          // Mask sources contribute even when their own drawable is invisible.
 
           renderer.setIsCulling(
             model.getDrawableCulling(clipDrawIndex) != false
@@ -801,6 +802,7 @@ export class CubismRenderer_WebGL extends CubismRenderer {
     }
 
     this.clearDrawableBuffers(deleteGpuResources);
+    this._drawableVisibility = undefined;
     this._bufferData = null;
     this._textures = null;
     this._textureFlipY.clear();
@@ -834,6 +836,8 @@ export class CubismRenderer_WebGL extends CubismRenderer {
     }
 
     this._drawGeneration += 1;
+    this._drawableVisibility ??= new CubismDrawableVisibility(this.getModel().getDrawableCount());
+    this._drawableVisibility.update(this.getModel(), this.getMvpMatrix().getArray(), s_viewport[2], s_viewport[3]);
     if (typeof (this.gl as WebGL2RenderingContext).createVertexArray === 'function') {
       this._geometry ??= new CubismGeometryBuffer(this.gl as WebGL2RenderingContext, this.getModel());
       this._geometry.update(this.getModel());
@@ -870,7 +874,7 @@ export class CubismRenderer_WebGL extends CubismRenderer {
       const drawableIndex: number = this._sortedDrawableIndexList.at(i);
 
       // Drawableが表示状態でなければ処理をパスする
-      if (!this.getModel().getDrawableDynamicFlagIsVisible(drawableIndex)) {
+      if (!this._drawableVisibility.has(drawableIndex)) {
         continue;
       }
 
@@ -1008,6 +1012,13 @@ export class CubismRenderer_WebGL extends CubismRenderer {
 
   public flushDraws(): void {
     this._geometry?.flush();
+  }
+
+  public isClippingContextVisible(context: CubismClippingContext_WebGL): boolean {
+    for (const index of context._clippedDrawableIndexList) {
+      if (this._drawableVisibility.has(index)) return true;
+    }
+    return false;
   }
 
   protected saveProfile(): void {
@@ -1212,6 +1223,7 @@ export class CubismRenderer_WebGL extends CubismRenderer {
   _clippingContextBufferForDraw: CubismClippingContext_WebGL; // 画面上描画するためのクリッピングコンテキスト
   _rendererProfile: CubismRendererProfile_WebGL;
   _geometry: CubismGeometryBuffer | undefined;
+  private _drawableVisibility: CubismDrawableVisibility | undefined;
   private _lastCulling: boolean | null = null;
   private _shader: CubismShader_WebGL;
   private _shaderContext: WebGLRenderingContext;

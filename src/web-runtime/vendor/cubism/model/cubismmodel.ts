@@ -16,6 +16,7 @@ import { csmMap } from '../type/csmmap';
 import { csmVector } from '../type/csmvector';
 import { CSM_ASSERT } from '../utils/cubismdebug';
 import { retainCubismCoreViews } from '../../../rendering/cubism/CubismCoreHeap';
+import { CubismDrawableBounds, type DrawableBounds } from '../../../rendering/cubism/CubismDrawableBounds';
 
 /**
  * SDK側から与えられたDrawableの乗算色・スクリーン色上書きフラグと
@@ -84,6 +85,12 @@ export class CubismModel {
   private _partBits: Uint32Array | null = null;
   private _evaluatedInputs = false;
   private readonly _drawableGeometryRevisions: Float64Array;
+  private _drawableBounds: CubismDrawableBounds | null = null;
+
+  public getDrawableBounds(index: number): Readonly<DrawableBounds> {
+    this._drawableBounds ??= new CubismDrawableBounds(this);
+    return this._drawableBounds.get(index);
+  }
 
   public getGeometryRevision(): number {
     return this._geometryRevision;
@@ -1601,6 +1608,7 @@ export class CubismModel {
    * デストラクタ相当の処理
    */
   public release(): void {
+    this._drawableBounds = null;
     this._releaseCoreViews?.();
     this._releaseCoreViews = null;
     this._model.release();

@@ -34,9 +34,8 @@ export class CubismGeometryBuffer {
   private batchSize = 0;
   private batchClip: unknown;
   private batchMask = false;
-  private readonly batchState = new Float64Array(13).fill(NaN);
+  private readonly batchState = new Float64Array(8).fill(NaN);
   private readonly multiplyColor = new CubismTextureColor();
-  private readonly screenColor = new CubismTextureColor();
 
   get batching(): boolean {
     return this.multiDraw !== null;
@@ -138,8 +137,8 @@ export class CubismGeometryBuffer {
   }
 
   canAppend(model: CubismModel, index: number, clip: unknown, culling: boolean): boolean {
+    // The ADV shader uses multiply RGB; screen color and multiply alpha are absent.
     const multiply = model.getMultiplyColorInto(index, this.multiplyColor);
-    const screen = model.getScreenColorInto(index, this.screenColor);
     const state = this.batchState;
     const texture = model.getDrawableTextureIndex(index);
     const blend = model.getDrawableBlendMode(index);
@@ -156,12 +155,7 @@ export class CubismGeometryBuffer {
       state[4] === opacity &&
       state[5] === multiply.r &&
       state[6] === multiply.g &&
-      state[7] === multiply.b &&
-      state[8] === multiply.a &&
-      state[9] === screen.r &&
-      state[10] === screen.g &&
-      state[11] === screen.b &&
-      state[12] === screen.a;
+      state[7] === multiply.b;
     if (!match) {
       this.batchMask = false;
       this.batchClip = clip;
@@ -173,11 +167,6 @@ export class CubismGeometryBuffer {
       state[5] = multiply.r;
       state[6] = multiply.g;
       state[7] = multiply.b;
-      state[8] = multiply.a;
-      state[9] = screen.r;
-      state[10] = screen.g;
-      state[11] = screen.b;
-      state[12] = screen.a;
     }
     return match;
   }

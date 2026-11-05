@@ -74,7 +74,6 @@ export class CubismShader_WebGL {
     this._shaderSets = new csmVector<CubismShaderSet>();
     this._baseColor = new CubismTextureColor();
     this._multiplyColor = new CubismTextureColor();
-    this._screenColor = new CubismTextureColor();
   }
 
   private getUnityAdvProgramUploadState(
@@ -91,9 +90,11 @@ export class CubismShader_WebGL {
         additionalLightsToken: null,
         multiplyParametersToken: null,
         lightingEnabled: null,
+        clipContext: null,
+        clipRenderer: null,
+        clipGeneration: -1,
         baseColor: new Float64Array(4).fill(NaN),
-        multiplyColor: new Float64Array(4).fill(NaN),
-        screenColor: new Float64Array(4).fill(NaN)
+        multiplyColor: new Float64Array(4).fill(NaN)
       };
       this._unityAdvProgramUploadStates.set(program, state);
     }
@@ -333,6 +334,7 @@ export class CubismShader_WebGL {
     this.bindDrawableGeometry(renderer, model, index);
 
     if (masked) {
+      const context = renderer.getClippingContextBufferForDraw();
       // frameBufferに書かれたテクスチャ
       const tex: WebGLTexture = renderer
         .getClippingContextBufferForDraw()
@@ -342,26 +344,21 @@ export class CubismShader_WebGL {
       this.bindTexture(1, tex);
 
       // view座標をClippingContextの座標に変換するための行列を設定
-      this.gl.uniformMatrix4fv(
-        shaderSet.uniformClipMatrixLocation,
-        false,
-        renderer.getClippingContextBufferForDraw()._matrixForDraw.getArray()
-      );
-
-      // 使用するカラーチャンネルを設定
-      const channelIndex: number =
-        renderer.getClippingContextBufferForDraw()._layoutChannelIndex;
-      const colorChannel: CubismTextureColor = renderer
-        .getClippingContextBufferForDraw()
-        .getClippingManager()
-        .getChannelFlagAsColor(channelIndex);
-      this.gl.uniform4f(
-        shaderSet.uniformChannelFlagLocation,
-        colorChannel.r,
-        colorChannel.g,
-        colorChannel.b,
-        colorChannel.a
-      );
+      if (this.clipChanged(uploadState, renderer, context)) {
+        this.gl.uniformMatrix4fv(
+          shaderSet.uniformClipMatrixLocation,
+          false,
+          context._matrixForDraw.getArray()
+        );
+        const colorChannel = context.getClippingManager().getChannelFlagAsColor(context._layoutChannelIndex);
+        this.gl.uniform4f(
+          shaderSet.uniformChannelFlagLocation,
+          colorChannel.r,
+          colorChannel.g,
+          colorChannel.b,
+          colorChannel.a
+        );
+      }
     }
 
     // テクスチャ設定
@@ -421,16 +418,10 @@ export class CubismShader_WebGL {
       index,
       this._multiplyColor
     );
-    const screenColor: CubismTextureColor = model.getScreenColorInto(
-      index,
-      this._screenColor
-    );
 
     this.uploadColor(shaderSet.uniformBaseColorLocation, baseColor, uploadState.baseColor);
 
     this.uploadColor(shaderSet.uniformMultiplyColorLocation, multiplyColor, uploadState.multiplyColor);
-
-    this.uploadColor(shaderSet.uniformScreenColorLocation, screenColor, uploadState.screenColor);
 
     const lighting = renderer.getUnityAdvLightingState();
     const lightingEnabled =
@@ -567,61 +558,25 @@ export class CubismShader_WebGL {
 
     // チャンネル
     const context = renderer.getClippingContextBufferForMask();
-    const channelIndex: number =
-      renderer.getClippingContextBufferForMask()._layoutChannelIndex;
-    const colorChannel: CubismTextureColor = renderer
-      .getClippingContextBufferForMask()
-      .getClippingManager()
-      .getChannelFlagAsColor(channelIndex);
-    this.gl.uniform4f(
-      shaderSet.uniformChannelFlagLocation,
-      colorChannel.r,
-      colorChannel.g,
-      colorChannel.b,
-      colorChannel.a
-    );
-
-    this.gl.uniformMatrix4fv(
-      shaderSet.uniformClipMatrixLocation,
-      false,
-      renderer.getClippingContextBufferForMask()._matrixForMask.getArray()
-    );
-
-    const rect: csmRect =
-      renderer.getClippingContextBufferForMask()._layoutBounds;
-
-    this.gl.uniform4f(
-      shaderSet.uniformBaseColorLocation,
-      rect.x * 2.0 - 1.0,
-      rect.y * 2.0 - 1.0,
-      rect.getRight() * 2.0 - 1.0,
-      rect.getBottom() * 2.0 - 1.0
-    );
-
-    const multiplyColor: CubismTextureColor = model.getMultiplyColorInto(
-      index,
-      this._multiplyColor
-    );
-    const screenColor: CubismTextureColor = model.getScreenColorInto(
-      index,
-      this._screenColor
-    );
-
-    this.gl.uniform4f(
-      shaderSet.uniformMultiplyColorLocation,
-      multiplyColor.r,
-      multiplyColor.g,
-      multiplyColor.b,
-      multiplyColor.a
-    );
-
-    this.gl.uniform4f(
-      shaderSet.uniformScreenColorLocation,
-      screenColor.r,
-      screenColor.g,
-      screenColor.b,
-      screenColor.a
-    );
+    if (this.clipChanged(uploadState, renderer, context)) {
+      const colorChannel = context.getClippingManager().getChannelFlagAsColor(context._layoutChannelIndex);
+      this.gl.uniform4f(
+        shaderSet.uniformChannelFlagLocation,
+        colorChannel.r,
+        colorChannel.g,
+        colorChannel.b,
+        colorChannel.a
+      );
+      this.gl.uniformMatrix4fv(shaderSet.uniformClipMatrixLocation, false, context._matrixForMask.getArray());
+      const rect: csmRect = context._layoutBounds;
+      this.gl.uniform4f(
+        shaderSet.uniformBaseColorLocation,
+        rect.x * 2.0 - 1.0,
+        rect.y * 2.0 - 1.0,
+        rect.getRight() * 2.0 - 1.0,
+        rect.getBottom() * 2.0 - 1.0
+      );
+    }
 
     // Blending
     const srcColor: number = this.gl.ZERO;
@@ -630,6 +585,15 @@ export class CubismShader_WebGL {
     const dstAlpha: number = this.gl.ONE_MINUS_SRC_ALPHA;
 
     this.setBlend(srcColor, dstColor, srcAlpha, dstAlpha);
+  }
+
+  private clipChanged(state: UnityAdvProgramUploadState, renderer: CubismRenderer_WebGL, context: object): boolean {
+    if (state.clipContext === context && state.clipRenderer === renderer &&
+      state.clipGeneration === renderer._drawGeneration) return false;
+    state.clipContext = context;
+    state.clipRenderer = renderer;
+    state.clipGeneration = renderer._drawGeneration;
+    return true;
   }
 
   /**
@@ -1385,7 +1349,6 @@ export class CubismShader_WebGL {
   _shaderSets: csmVector<CubismShaderSet>; // ロードしたシェーダープログラムを保持する変数
   private _baseColor: CubismTextureColor;
   private _multiplyColor: CubismTextureColor;
-  private _screenColor: CubismTextureColor;
   private _unityAdvProgramUploadStates = new WeakMap<
     WebGLProgram,
     UnityAdvProgramUploadState
@@ -1394,6 +1357,9 @@ export class CubismShader_WebGL {
 }
 
 interface UnityAdvProgramUploadState {
+  clipContext: object | null;
+  clipRenderer: CubismRenderer_WebGL | null;
+  clipGeneration: number;
   samplerUnitsInitialized: boolean;
   textureFlipY: number | null;
   drawRendererToken: CubismRenderer_WebGL | null;
@@ -1404,7 +1370,6 @@ interface UnityAdvProgramUploadState {
   lightingEnabled: boolean | null;
   baseColor: Float64Array;
   multiplyColor: Float64Array;
-  screenColor: Float64Array;
 }
 
 interface CubismShaderContextEntry {
