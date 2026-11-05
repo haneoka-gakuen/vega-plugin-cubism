@@ -7,6 +7,8 @@
  */
 
 import { CubismModel } from '../model/cubismmodel';
+import { CubismGeometryBuffer } from '../../../rendering/cubism/CubismGeometryBuffer';
+import { bindUnityCubismMissingNormal } from '../../../rendering/cubism/UnityCubismVertexDefaults';
 import { csmMap } from '../type/csmmap';
 import { csmRect } from '../type/csmrectf';
 import { csmVector } from '../type/csmvector';
@@ -819,6 +821,10 @@ export class CubismRenderer_WebGL extends CubismRenderer {
     }
 
     this._drawGeneration += 1;
+    if (typeof (this.gl as WebGL2RenderingContext).createVertexArray === 'function') {
+      this._geometry ??= new CubismGeometryBuffer(this.gl as WebGL2RenderingContext, this.getModel());
+      this._geometry.update(this.getModel());
+    }
 
     //------------ クリッピングマスク・バッファ前処理方式の場合 ------------
     if (this._clippingManager != null) {
@@ -932,6 +938,7 @@ export class CubismRenderer_WebGL extends CubismRenderer {
 
       this.drawMeshWebGL(this._model, drawableIndex);
     }
+    this._geometry?.flush();
   }
 
   /**
@@ -940,14 +947,20 @@ export class CubismRenderer_WebGL extends CubismRenderer {
    * @param index 描画対象のメッシュのインデックス
    */
   public drawMeshWebGL(model: Readonly<CubismModel>, index: number): void {
-    // 裏面描画の有効・無効
-    if (this.isCulling()) {
-      this.gl.enable(this.gl.CULL_FACE);
-    } else {
-      this.gl.disable(this.gl.CULL_FACE);
+    const culling = this.isCulling();
+    const batch = this._geometry?.batching && !this.isGeneratingMask() && !this.isUsingHighPrecisionMask();
+    if (batch && this._geometry.canAppend(model, index, this.getClippingContextBufferForDraw(), culling)) {
+      this._geometry.enqueue(index);
+      this.setClippingContextBufferForDraw(null);
+      this.setClippingContextBufferForMask(null);
+      return;
     }
-
-    this.gl.frontFace(this.gl.CCW); // Cubism SDK OpenGLはマスク・アートメッシュ共にCCWが表面
+    this._geometry?.flush();
+    if (this._lastCulling !== culling) {
+      if (culling) this.gl.enable(this.gl.CULL_FACE);
+      else this.gl.disable(this.gl.CULL_FACE);
+      this._lastCulling = culling;
+    }
 
     const shader = this._shader;
     if (shader == null) {
@@ -965,12 +978,9 @@ export class CubismRenderer_WebGL extends CubismRenderer {
 
     {
       const indexCount: number = model.getDrawableVertexIndexCount(index);
-      this.gl.drawElements(
-        this.gl.TRIANGLES,
-        indexCount,
-        this.gl.UNSIGNED_SHORT,
-        0
-      );
+      if (batch) this._geometry.enqueue(index);
+      else if (this._geometry) this._geometry.draw(index);
+      else this.gl.drawElements(this.gl.TRIANGLES, indexCount, this.gl.UNSIGNED_SHORT, 0);
     }
 
     // 次のdrawableは直ちに別のCubism programをbindする。ここでnullへ
@@ -1051,6 +1061,13 @@ export class CubismRenderer_WebGL extends CubismRenderer {
    * モデルを描画する前にクリッピングマスクに必要な処理を実装している
    */
   public preDraw(): void {
+    this._geometry?.flush();
+    this._lastCulling = null;
+    this._geometry?.invalidateBinding();
+    this._shader?.invalidateDrawBindings();
+    const gl2 = this.gl as WebGL2RenderingContext;
+    if (typeof gl2.bindVertexArray === 'function') gl2.bindVertexArray(null);
+    bindUnityCubismMissingNormal(this.gl);
     if (this.firstDraw) {
       this.firstDraw = false;
     }
@@ -1060,7 +1077,7 @@ export class CubismRenderer_WebGL extends CubismRenderer {
     this.gl.disable(this.gl.DEPTH_TEST);
 
     // カリング（1.0beta3）
-    this.gl.frontFace(this.gl.CW);
+    this.gl.frontFace(this.gl.CCW);
 
     this.gl.enable(this.gl.BLEND);
     this.gl.colorMask(true, true, true, true);
@@ -1153,6 +1170,8 @@ export class CubismRenderer_WebGL extends CubismRenderer {
       for (const buffer of buffers.uv) gl.deleteBuffer(buffer);
       for (const buffer of buffers.index) gl.deleteBuffer(buffer);
     }
+    this._geometry?.dispose(deleteGpuResources && gl != null && !gl.isContextLost());
+    this._geometry = undefined;
     buffers.vertex.length = 0;
     buffers.uv.length = 0;
     buffers.index.length = 0;
@@ -1171,6 +1190,8 @@ export class CubismRenderer_WebGL extends CubismRenderer {
   _clippingContextBufferForMask: CubismClippingContext_WebGL; // マスクテクスチャに描画するためのクリッピングコンテキスト
   _clippingContextBufferForDraw: CubismClippingContext_WebGL; // 画面上描画するためのクリッピングコンテキスト
   _rendererProfile: CubismRendererProfile_WebGL;
+  _geometry: CubismGeometryBuffer | undefined;
+  private _lastCulling: boolean | null = null;
   private _shader: CubismShader_WebGL;
   private _shaderContext: WebGLRenderingContext;
   firstDraw: boolean;

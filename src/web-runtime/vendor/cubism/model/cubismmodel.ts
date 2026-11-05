@@ -76,9 +76,13 @@ export class DrawableCullingData {
 export class CubismModel {
   private _releaseCoreViews: (() => void) | null = null;
   private _geometryRevision = 0;
+  private readonly _drawableGeometryRevisions: Float64Array;
 
   public getGeometryRevision(): number {
     return this._geometryRevision;
+  }
+  public getDrawableGeometryRevision(index: number): number {
+    return this._drawableGeometryRevisions[index];
   }
   /**
    * モデルのパラメータの更新
@@ -87,7 +91,10 @@ export class CubismModel {
     // Update model
     this._model.update();
     this._geometryRevision += 1;
-
+    for (let index = 0; index < this._drawableGeometryRevisions.length; index++) {
+      if (this.getDrawableDynamicFlagVertexPositionsDidChange(index))
+        this._drawableGeometryRevisions[index] = this._geometryRevision;
+    }
     this._model.drawables.resetDynamicFlags();
   }
 
@@ -1576,6 +1583,7 @@ export class CubismModel {
    */
   public constructor(model: Live2DCubismCore.Model) {
     this._model = model;
+    this._drawableGeometryRevisions = new Float64Array(model.drawables.count);
     this._parameterValues = null;
     this._parameterMaximumValues = null;
     this._parameterMinimumValues = null;

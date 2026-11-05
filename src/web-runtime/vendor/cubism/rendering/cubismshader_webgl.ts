@@ -49,11 +49,63 @@ export class CubismShader_WebGL {
         drawGenerationToken: -1,
         lightingToken: null,
         additionalLightsToken: null,
-        multiplyParametersToken: null
+        multiplyParametersToken: null,
+        lightingEnabled: null,
+        baseColor: new Float64Array(4).fill(NaN),
+        multiplyColor: new Float64Array(4).fill(NaN),
+        screenColor: new Float64Array(4).fill(NaN)
       };
       this._unityAdvProgramUploadStates.set(program, state);
     }
     return state;
+  }
+
+  private activeProgram: WebGLProgram | null = null;
+  private activeTextureUnit = -1;
+  private readonly blendFactors = [-1, -1, -1, -1];
+  private readonly textureBindings: Array<WebGLTexture | undefined> = [];
+
+  public invalidateDrawBindings(): void {
+    this.activeProgram = null;
+    this.activeTextureUnit = -1;
+    this.textureBindings.length = 0;
+    this.blendFactors.fill(-1);
+  }
+
+  private useProgram(program: WebGLProgram): void {
+    if (this.activeProgram === program) return;
+    this.gl.useProgram(program);
+    this.activeProgram = program;
+  }
+
+  private bindTexture(unit: number, texture: WebGLTexture): void {
+    if (this.textureBindings[unit] === texture) return;
+    if (this.activeTextureUnit !== unit) {
+      this.gl.activeTexture(this.gl.TEXTURE0 + unit);
+      this.activeTextureUnit = unit;
+    }
+    this.gl.bindTexture(this.gl.TEXTURE_2D, texture);
+    this.textureBindings[unit] = texture;
+  }
+
+  private setBlend(srcColor: number, dstColor: number, srcAlpha: number, dstAlpha: number): void {
+    const factors = this.blendFactors;
+    if (factors[0] === srcColor && factors[1] === dstColor && factors[2] === srcAlpha && factors[3] === dstAlpha) return;
+    this.gl.blendFuncSeparate(srcColor, dstColor, srcAlpha, dstAlpha);
+    factors[0] = srcColor;
+    factors[1] = dstColor;
+    factors[2] = srcAlpha;
+    factors[3] = dstAlpha;
+  }
+
+  private uploadColor(location: WebGLUniformLocation, color: CubismTextureColor, previous: Float64Array): void {
+    if (!location || (previous[0] === color.r && previous[1] === color.g &&
+        previous[2] === color.b && previous[3] === color.a)) return;
+    this.gl.uniform4f(location, color.r, color.g, color.b, color.a);
+    previous[0] = color.r;
+    previous[1] = color.g;
+    previous[2] = color.b;
+    previous[3] = color.a;
   }
 
   /**
@@ -70,12 +122,13 @@ export class CubismShader_WebGL {
     renderer: CubismRenderer_WebGL,
     model: Readonly<CubismModel>,
     index: number,
-    attributeLocation: number
+    attributeLocation: number,
+    configureAttributes = true
   ): void {
     const buffers = renderer._bufferData;
     let buffer = buffers.vertex[index];
     const vertices: Float32Array = model.getDrawableVertices(index);
-    const revision = model.getGeometryRevision();
+    const revision = model.getDrawableGeometryRevision(index);
     if (buffer == null) {
       buffer = this.gl.createBuffer();
       buffers.vertex[index] = buffer;
@@ -84,7 +137,8 @@ export class CubismShader_WebGL {
       buffers.vertexByteLength[index] = vertices.byteLength;
       buffers.vertexRevision[index] = revision;
     } else {
-      this.gl.bindBuffer(this.gl.ARRAY_BUFFER, buffer);
+      if (configureAttributes || buffers.vertexRevision[index] !== revision)
+        this.gl.bindBuffer(this.gl.ARRAY_BUFFER, buffer);
       if (buffers.vertexRevision[index] !== revision) {
         if (buffers.vertexByteLength[index] !== vertices.byteLength) {
           this.gl.bufferData(
@@ -99,8 +153,10 @@ export class CubismShader_WebGL {
         buffers.vertexRevision[index] = revision;
       }
     }
-    this.gl.enableVertexAttribArray(attributeLocation);
-    this.gl.vertexAttribPointer(attributeLocation, 2, this.gl.FLOAT, false, 0, 0);
+    if (configureAttributes) {
+      this.gl.enableVertexAttribArray(attributeLocation);
+      this.gl.vertexAttribPointer(attributeLocation, 2, this.gl.FLOAT, false, 0, 0);
+    }
   }
 
   /** UVはモデル生成後に不変なのでdrawable専用VBOへ一度だけ転送する。 */
@@ -148,6 +204,22 @@ export class CubismShader_WebGL {
     } else {
       this.gl.bindBuffer(this.gl.ELEMENT_ARRAY_BUFFER, buffer);
     }
+  }
+
+  private bindDrawableGeometry(
+    renderer: CubismRenderer_WebGL,
+    model: Readonly<CubismModel>,
+    index: number
+  ): void {
+    if (renderer._geometry) {
+      renderer._geometry.bind();
+      return;
+    }
+    const gl = this.gl;
+    bindUnityCubismMissingNormal(gl);
+    this.bindDrawableVertices(renderer, model, index, UNITY_CUBISM_POSITION_ATTRIBUTE_LOCATION);
+    this.bindDrawableUvs(renderer, model, index, UNITY_CUBISM_UV_ATTRIBUTE_LOCATION);
+    this.bindDrawableIndices(renderer, model, index);
   }
 
   /**
@@ -215,39 +287,21 @@ export class CubismShader_WebGL {
         break;
     }
 
-    this.gl.useProgram(shaderSet.shaderProgram);
+    this.useProgram(shaderSet.shaderProgram);
     const uploadState = this.getUnityAdvProgramUploadState(
       shaderSet.shaderProgram
     );
 
-    // Cubism Core supplies position/UV only. Unity's native vertex-stream
-    // fallback supplies NORMAL0=(0,0,+1,0), which the High/Best ADV lighting
-    // shader consumes. A generic attribute avoids a redundant normal buffer.
-    bindUnityCubismMissingNormal(this.gl);
-
-    this.bindDrawableVertices(
-      renderer,
-      model,
-      index,
-      shaderSet.attributePositionLocation
-    );
-    this.bindDrawableUvs(
-      renderer,
-      model,
-      index,
-      shaderSet.attributeTexCoordLocation
-    );
+    this.bindDrawableGeometry(renderer, model, index);
 
     if (masked) {
-      this.gl.activeTexture(this.gl.TEXTURE1);
-
       // frameBufferに書かれたテクスチャ
       const tex: WebGLTexture = renderer
         .getClippingContextBufferForDraw()
         .getClippingManager()
         .getColorBuffer()
         .at(renderer.getClippingContextBufferForDraw()._bufferIndex);
-      this.gl.bindTexture(this.gl.TEXTURE_2D, tex);
+      this.bindTexture(1, tex);
 
       // view座標をClippingContextの座標に変換するための行列を設定
       this.gl.uniformMatrix4fv(
@@ -282,18 +336,13 @@ export class CubismShader_WebGL {
     const textureId: WebGLTexture = renderer
       .getBindedTextures()
       .getValue(textureNo);
-    this.gl.activeTexture(this.gl.TEXTURE0);
-    this.gl.bindTexture(this.gl.TEXTURE_2D, textureId);
+    this.bindTexture(0, textureId);
 
     // The compatible fragment path samples `_MultiplyTex` even when the use
     // flag is zero. Keep a complete texture bound; an absent property uses the
     // drawable's main texture and is algebraically ignored.
     const multiplyTexture = renderer.getUnityAdvMultiplyTexture();
-    this.gl.activeTexture(this.gl.TEXTURE2);
-    this.gl.bindTexture(
-      this.gl.TEXTURE_2D,
-      multiplyTexture || textureId
-    );
+    this.bindTexture(2, multiplyTexture || textureId);
     if (!uploadState.samplerUnitsInitialized) {
       this.gl.uniform1i(shaderSet.samplerTexture0Location, 0);
       this.gl.uniform1i(shaderSet.samplerMultiplyTextureLocation, 2);
@@ -342,29 +391,11 @@ export class CubismShader_WebGL {
       this._screenColor
     );
 
-    this.gl.uniform4f(
-      shaderSet.uniformBaseColorLocation,
-      baseColor.r,
-      baseColor.g,
-      baseColor.b,
-      baseColor.a
-    );
+    this.uploadColor(shaderSet.uniformBaseColorLocation, baseColor, uploadState.baseColor);
 
-    this.gl.uniform4f(
-      shaderSet.uniformMultiplyColorLocation,
-      multiplyColor.r,
-      multiplyColor.g,
-      multiplyColor.b,
-      multiplyColor.a
-    );
+    this.uploadColor(shaderSet.uniformMultiplyColorLocation, multiplyColor, uploadState.multiplyColor);
 
-    this.gl.uniform4f(
-      shaderSet.uniformScreenColorLocation,
-      screenColor.r,
-      screenColor.g,
-      screenColor.b,
-      screenColor.a
-    );
+    this.uploadColor(shaderSet.uniformScreenColorLocation, screenColor, uploadState.screenColor);
 
     const lighting = renderer.getUnityAdvLightingState();
     const lightingEnabled =
@@ -373,10 +404,10 @@ export class CubismShader_WebGL {
         lighting.disableForMultiplicativeDrawables &&
         drawableBlendMode === CubismBlendMode.CubismBlendMode_Multiplicative
       );
-    this.gl.uniform1f(
-      shaderSet.uniformLightingEnabledLocation,
-      lightingEnabled ? 1 : 0
-    );
+    if (uploadState.lightingEnabled !== lightingEnabled) {
+      this.gl.uniform1f(shaderSet.uniformLightingEnabledLocation, lightingEnabled ? 1 : 0);
+      uploadState.lightingEnabled = lightingEnabled;
+    }
     if (uploadState.lightingToken !== lighting) {
       const sh = lighting.sphericalHarmonics;
       this.gl.uniform4fv(
@@ -449,9 +480,7 @@ export class CubismShader_WebGL {
       uploadState.multiplyParametersToken = multiplyParameters;
     }
 
-    this.bindDrawableIndices(renderer, model, index);
-
-    this.gl.blendFuncSeparate(srcColor, dstColor, srcAlpha, dstAlpha);
+    this.setBlend(srcColor, dstColor, srcAlpha, dstAlpha);
   }
 
   /**
@@ -476,17 +505,12 @@ export class CubismShader_WebGL {
     const shaderSet: CubismShaderSet = this._shaderSets.at(
       ShaderNames.ShaderNames_SetupMask
     );
-    this.gl.useProgram(shaderSet.shaderProgram);
+    this.useProgram(shaderSet.shaderProgram);
     const uploadState = this.getUnityAdvProgramUploadState(
       shaderSet.shaderProgram
     );
 
-    this.bindDrawableVertices(
-      renderer,
-      model,
-      index,
-      shaderSet.attributePositionLocation
-    );
+    this.bindDrawableGeometry(renderer, model, index);
 
     //テクスチャ設定
     const textureNo: number = model.getDrawableTextureIndex(index);
@@ -498,19 +522,11 @@ export class CubismShader_WebGL {
     const textureId: WebGLTexture = renderer
       .getBindedTextures()
       .getValue(textureNo);
-    this.gl.activeTexture(this.gl.TEXTURE0);
-    this.gl.bindTexture(this.gl.TEXTURE_2D, textureId);
+    this.bindTexture(0, textureId);
     if (!uploadState.samplerUnitsInitialized) {
       this.gl.uniform1i(shaderSet.samplerTexture0Location, 0);
       uploadState.samplerUnitsInitialized = true;
     }
-
-    this.bindDrawableUvs(
-      renderer,
-      model,
-      index,
-      shaderSet.attributeTexCoordLocation
-    );
 
     // チャンネル
     const context = renderer.getClippingContextBufferForMask();
@@ -576,9 +592,7 @@ export class CubismShader_WebGL {
     const srcAlpha: number = this.gl.ZERO;
     const dstAlpha: number = this.gl.ONE_MINUS_SRC_ALPHA;
 
-    this.bindDrawableIndices(renderer, model, index);
-
-    this.gl.blendFuncSeparate(srcColor, dstColor, srcAlpha, dstAlpha);
+    this.setBlend(srcColor, dstColor, srcAlpha, dstAlpha);
   }
 
   /**
@@ -1343,6 +1357,10 @@ interface UnityAdvProgramUploadState {
   lightingToken: unknown;
   additionalLightsToken: unknown;
   multiplyParametersToken: unknown;
+  lightingEnabled: boolean | null;
+  baseColor: Float64Array;
+  multiplyColor: Float64Array;
+  screenColor: Float64Array;
 }
 
 interface CubismShaderContextEntry {
@@ -1755,27 +1773,31 @@ const fragmentShaderSrcAdvCommon = `
   }
 
   vec4 unityCubismAdvColor() {
-    vec3 normal = normalize(v_worldNormal);
-    vec3 ambient = unityLinearToSrgb(unityShadeSH9(normal));
-    vec3 mainDirection = normalize(u_mainLightPosition.xyz);
-    float mainNdotL = max(dot(normal, -mainDirection), 0.0);
-    vec3 vertexLightDirection = normalize(v_vertexLightDirection);
-    float vertexNdotL = max(dot(normal, vertexLightDirection), 0.0);
-    vec3 enabledLight = ambient * (
-      u_mainLightColor * mainNdotL + v_vertexLightColor * vertexNdotL
-    );
-    vec3 lightFactor = (enabledLight - 1.0) * u_lightingEnabled + 1.0;
-
     vec4 textureColor = texture2D(s_texture0, v_texCoord);
-    vec3 rgb = lightFactor * textureColor.rgb * u_multiplyColor.rgb * u_baseColor.rgb;
     float alpha = textureColor.a * u_baseColor.a;
-
-    float wave = sin(u_timeSeconds * u_multiplyTextureFrequency * 6.28318548);
-    vec2 screenUv = v_screenPos.xy / v_screenPos.w;
-    vec2 multiplyUv = screenUv * u_multiplyUv.xy + u_multiplyUv.zw;
-    multiplyUv += u_multiplyTextureAmplitude * wave;
-    vec3 multiplySample = texture2D(s_multiplyTexture, multiplyUv).rgb;
-    rgb += u_useMultiplyTexture * ((rgb * multiplySample - rgb) * u_multiplyTextureIntensity);
+    if (alpha == 0.0) return vec4(0.0);
+    vec3 lightFactor = vec3(1.0);
+    if (u_lightingEnabled > 0.0) {
+      vec3 normal = normalize(v_worldNormal);
+      vec3 ambient = unityLinearToSrgb(unityShadeSH9(normal));
+      vec3 mainDirection = normalize(u_mainLightPosition.xyz);
+      float mainNdotL = max(dot(normal, -mainDirection), 0.0);
+      vec3 vertexLightDirection = normalize(v_vertexLightDirection);
+      float vertexNdotL = max(dot(normal, vertexLightDirection), 0.0);
+      vec3 enabledLight = ambient * (
+        u_mainLightColor * mainNdotL + v_vertexLightColor * vertexNdotL
+      );
+      lightFactor = (enabledLight - 1.0) * u_lightingEnabled + 1.0;
+    }
+    vec3 rgb = lightFactor * textureColor.rgb * u_multiplyColor.rgb * u_baseColor.rgb;
+    if (u_useMultiplyTexture > 0.0 && u_multiplyTextureIntensity != 0.0) {
+      float wave = sin(u_timeSeconds * u_multiplyTextureFrequency * 6.28318548);
+      vec2 screenUv = v_screenPos.xy / v_screenPos.w;
+      vec2 multiplyUv = screenUv * u_multiplyUv.xy + u_multiplyUv.zw;
+      multiplyUv += u_multiplyTextureAmplitude * wave;
+      vec3 multiplySample = texture2D(s_multiplyTexture, multiplyUv).rgb;
+      rgb += u_useMultiplyTexture * ((rgb * multiplySample - rgb) * u_multiplyTextureIntensity);
+    }
 
     // The compiled shader premultiplies after lighting and multiply texture.
     return vec4(rgb * alpha, alpha);

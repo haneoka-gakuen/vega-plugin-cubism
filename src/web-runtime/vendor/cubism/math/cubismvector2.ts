@@ -70,7 +70,7 @@ export class CubismVector2 {
    * @return 乗算結果 ベクトル値
    */
   public multiplyByScaler(scalar: number): CubismVector2 {
-    return this.multiply(new CubismVector2(scalar, scalar));
+    return new CubismVector2(this.x * scalar, this.y * scalar);
   }
 
   /**
@@ -93,7 +93,7 @@ export class CubismVector2 {
    * @return 除算結果 ベクトル値
    */
   public divisionByScalar(scalar: number): CubismVector2 {
-    return this.division(new CubismVector2(scalar, scalar));
+    return new CubismVector2(this.x / scalar, this.y / scalar);
   }
 
   /**

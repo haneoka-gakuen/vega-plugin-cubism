@@ -400,32 +400,15 @@ export class CubismPhysics {
         const destinationParameterIndex: number =
           currentOutputs[i].destinationParameterIndex;
 
-        const outParameterCaches: Float32Array =
-          !Float32Array.prototype.slice && 'subarray' in Float32Array.prototype
-            ? JSON.parse(
-                JSON.stringify(
-                  parameterValues.subarray(destinationParameterIndex)
-                )
-              ) // 値渡しするため、JSON.parse, JSON.stringify
-            : parameterValues.slice(destinationParameterIndex);
-
         updateOutputParameterValue(
-          outParameterCaches,
+          parameterValues,
           parameterMinimumValues[destinationParameterIndex],
           parameterMaximumValues[destinationParameterIndex],
           outputValue,
-          currentOutputs[i]
+          currentOutputs[i],
+          destinationParameterIndex
         );
-
-        // 値を反映
-        for (
-          let offset: number = destinationParameterIndex, outParamIndex = 0;
-          offset < this._parameterCaches.length;
-          offset++, outParamIndex++
-        ) {
-          parameterValues[offset] = this._parameterCaches[offset] =
-            outParameterCaches[outParamIndex];
-        }
+        this._parameterCaches[destinationParameterIndex] = parameterValues[destinationParameterIndex];
       }
     }
   }
@@ -650,32 +633,14 @@ export class CubismPhysics {
 
           const destinationParameterIndex: number =
             currentOutputs[i].destinationParameterIndex;
-          const outParameterCaches: Float32Array =
-            !Float32Array.prototype.slice &&
-            'subarray' in Float32Array.prototype
-              ? JSON.parse(
-                  JSON.stringify(
-                    this._parameterCaches.subarray(destinationParameterIndex)
-                  )
-                ) // 値渡しするため、JSON.parse, JSON.stringify
-              : this._parameterCaches.slice(destinationParameterIndex);
-
           updateOutputParameterValue(
-            outParameterCaches,
+            this._parameterCaches,
             parameterMinimumValues[destinationParameterIndex],
             parameterMaximumValues[destinationParameterIndex],
             outputValue,
-            currentOutputs[i]
+            currentOutputs[i],
+            destinationParameterIndex
           );
-
-          // 値を反映
-          for (
-            let offset: number = destinationParameterIndex, outParamIndex = 0;
-            offset < this._parameterCaches.length;
-            offset++, outParamIndex++
-          ) {
-            this._parameterCaches[offset] = outParameterCaches[outParamIndex];
-          }
         }
       }
       this._currentRemainTime -= physicsDeltaTime;
@@ -718,33 +683,16 @@ export class CubismPhysics {
 
         const destinationParameterIndex: number =
           currentOutputs[i].destinationParameterIndex;
-        const outParameterValues: Float32Array =
-          !Float32Array.prototype.slice && 'subarray' in Float32Array.prototype
-            ? JSON.parse(
-                JSON.stringify(
-                  parameterValues.subarray(destinationParameterIndex)
-                )
-              ) // 値渡しするため、JSON.parse, JSON.stringify
-            : parameterValues.slice(destinationParameterIndex);
-
         updateOutputParameterValue(
-          outParameterValues,
+          parameterValues,
           parameterMinimumValues[destinationParameterIndex],
           parameterMaximumValues[destinationParameterIndex],
           this._previousRigOutputs.at(settingIndex).outputs.at(i) *
             (1 - weight) +
             this._currentRigOutputs.at(settingIndex).outputs.at(i) * weight,
-          currentOutputs[i]
+          currentOutputs[i],
+          destinationParameterIndex
         );
-
-        // 値を反映
-        for (
-          let offset: number = destinationParameterIndex, outParamIndex = 0;
-          offset < parameterValues.length;
-          offset++, outParamIndex++
-        ) {
-          parameterValues[offset] = outParameterValues[outParamIndex];
-        }
       }
     }
   }
@@ -1232,7 +1180,8 @@ function updateOutputParameterValue(
   parameterValueMinimum: number,
   parameterValueMaximum: number,
   translation: number,
-  output: CubismPhysicsOutput
+  output: CubismPhysicsOutput,
+  destinationIndex = 0
 ): void {
   let value: number;
   const outputScale: number = output.getScale(
@@ -1259,10 +1208,10 @@ function updateOutputParameterValue(
   const weight: number = output.weight / MaximumWeight;
 
   if (weight >= 1.0) {
-    parameterValue[0] = value;
+    parameterValue[destinationIndex] = value;
   } else {
-    value = parameterValue[0] * (1.0 - weight) + value * weight;
-    parameterValue[0] = value;
+    value = parameterValue[destinationIndex] * (1.0 - weight) + value * weight;
+    parameterValue[destinationIndex] = value;
   }
 }
 

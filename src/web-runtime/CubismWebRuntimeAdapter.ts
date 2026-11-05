@@ -180,6 +180,7 @@ const ownRelease = (model: RuntimeModel, releaseContext?: () => void): RuntimeMo
         }
       : null;
   let released = false;
+  const boundMethods = new Map<PropertyKey, { original: unknown; bound: unknown }>();
   return new Proxy(model, {
     get(target, property) {
       if (rendererProfile && Object.hasOwn(rendererProfile, property)) return Reflect.get(rendererProfile, property);
@@ -195,7 +196,12 @@ const ownRelease = (model: RuntimeModel, releaseContext?: () => void): RuntimeMo
         };
       }
       const value = Reflect.get(target, property, target) as unknown;
-      return typeof value === "function" ? value.bind(target) : value;
+      if (typeof value !== "function") return value;
+      const cached = boundMethods.get(property);
+      if (cached?.original === value) return cached.bound;
+      const bound = value.bind(target);
+      boundMethods.set(property, { original: value, bound });
+      return bound;
     },
   });
 };
