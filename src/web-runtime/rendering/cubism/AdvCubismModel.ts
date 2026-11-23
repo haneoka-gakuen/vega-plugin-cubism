@@ -145,7 +145,8 @@ function resolveResourceUrl(baseUrl: string, resource: string): string {
 }
 
 function fileStem(path: string): string {
-  const file = path.split("/").pop() || path;
+  const cleanPath = path.split(/[?#]/u, 1)[0] ?? path;
+  const file = cleanPath.slice(cleanPath.lastIndexOf("/") + 1);
   return file.replace(/\.(?:motion3|exp3)\.json$/i, "");
 }
 
