@@ -2,6 +2,7 @@ import type { Matrix4Like } from "./math/Matrix4";
 import type { AdvCubismDrawState, CubismDrawableBounds, CubismParameterFrame } from "./cubism/AdvCubismModel";
 import type { AdvMotionSyncCoreStatus } from "./cubism/AdvMotionSyncCore";
 import type { CubismParameterLoopTimeline } from "./cubism/AdvCubismParameterLoop";
+import type { NativeTimelineSourceWindow } from "@haneoka/vega/renderer-kit";
 
 /**
  * Render-backend contract for every world-space story character.
@@ -39,9 +40,9 @@ export interface StoryCharacterModel {
   playMotionAt(name: string, positionSeconds: number, fadeInSeconds?: number, options?: { loop?: boolean }): boolean;
   playExpression(name: string, fadeInSeconds?: number): boolean;
   /** Opcode 68: fade the clip's parameters in and loop it until stopParameterLoopMotion. */
-  playParameterLoopMotion?(name: string, fadeInSeconds?: number): boolean;
+  playParameterLoopMotion?(name: string, fadeInSeconds?: number, sourceWindow?: NativeTimelineSourceWindow): boolean;
   /** Ends a parameter loop, easing its parameters home over the clip's fade-out. */
-  stopParameterLoopMotion?(fadeSeconds?: number): void;
+  stopParameterLoopMotion?(fadeSeconds?: number, sourceWindow?: NativeTimelineSourceWindow): void;
   createSnapshot?(): unknown;
   restoreSnapshot?(snapshot: unknown): void | Promise<void>;
   restoreParameterLoopTimeline?(timeline: CubismParameterLoopTimeline): void | Promise<void>;

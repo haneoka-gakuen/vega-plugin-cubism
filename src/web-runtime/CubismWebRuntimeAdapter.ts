@@ -1,4 +1,5 @@
 import type { StoryCharacterModel, StoryCharacterModelContext, StoryCharacterPresentation } from "@haneoka/vega/plugin";
+import type { NativeTimelineSourceWindow } from "@haneoka/vega/renderer-kit";
 import { Matrix4 } from "./rendering/math/Matrix4";
 import type { CubismModelDescriptor, CubismRendererCharacterContext, CubismRuntimeAdapter } from "../index";
 import {
@@ -621,12 +622,12 @@ class CanvasCubismStoryModel implements StoryCharacterModel {
     return this.model.playExpression(name, fadeInSeconds);
   }
 
-  playParameterLoopMotion(name: string, fadeInSeconds?: number): boolean {
-    return this.model.playParameterLoopMotion?.(name, fadeInSeconds) ?? false;
+  playParameterLoopMotion(name: string, fadeInSeconds?: number, sourceWindow?: NativeTimelineSourceWindow): boolean {
+    return this.model.playParameterLoopMotion?.(name, fadeInSeconds, sourceWindow) ?? false;
   }
 
-  stopParameterLoopMotion(fadeSeconds?: number): void {
-    this.model.stopParameterLoopMotion?.(fadeSeconds);
+  stopParameterLoopMotion(fadeSeconds?: number, sourceWindow?: NativeTimelineSourceWindow): void {
+    this.model.stopParameterLoopMotion?.(fadeSeconds, sourceWindow);
   }
 
   createSnapshot(): unknown {

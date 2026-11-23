@@ -2,6 +2,7 @@ import type { CubismModel } from "../../vendor/cubism/model/cubismmodel";
 import { CubismMath } from "../../vendor/cubism/math/cubismmath";
 import { evaluateCurve, type CubismMotion } from "../../vendor/cubism/motion/cubismmotion";
 import { CubismMotionCurveTarget } from "../../vendor/cubism/motion/cubismmotioninternal";
+import type { NativeTimelineSourceWindow } from "@haneoka/vega/renderer-kit";
 
 export interface CubismParameterLoopSnapshot {
   readonly name: string;
@@ -12,11 +13,18 @@ export interface CubismParameterLoopSnapshot {
   readonly fadeElapsed: number;
   readonly fadeDuration: number;
   readonly stopping: boolean;
+  readonly playbackRate?: number;
 }
 
 export interface CubismParameterLoopTimeline {
   readonly events: readonly (
-    | { readonly kind: "loop"; readonly name: string; readonly fadeSeconds: number; readonly atSeconds: number }
+    | {
+        readonly kind: "loop";
+        readonly name: string;
+        readonly fadeSeconds: number;
+        readonly atSeconds: number;
+        readonly sourceWindow?: NativeTimelineSourceWindow;
+      }
     | { readonly kind: "pause"; readonly paused: boolean; readonly atSeconds: number }
     | { readonly kind: "speed"; readonly rate: number; readonly atSeconds: number }
     | { readonly kind: "show"; readonly atSeconds: number }
@@ -37,6 +45,7 @@ export class AdvCubismParameterLoop {
     fadeElapsed: 0,
     fadeDuration: 0,
     stopping: false,
+    playbackRate: 1,
   };
 
   private bind(model: CubismModel, motion: CubismMotion): typeof this.targets | null {
@@ -54,7 +63,13 @@ export class AdvCubismParameterLoop {
     return parameterCurves > 0 ? targets : null;
   }
 
-  play(model: CubismModel, name: string, motion: CubismMotion, fadeSeconds = 0): boolean {
+  play(
+    model: CubismModel,
+    name: string,
+    motion: CubismMotion,
+    fadeSeconds = 0,
+    sourceWindow?: NativeTimelineSourceWindow,
+  ): boolean {
     const targets = this.bind(model, motion);
     if (!targets) return false;
     this.restoreDefaults(model);
@@ -70,11 +85,16 @@ export class AdvCubismParameterLoop {
       fadeElapsed: 0,
       fadeDuration: duration,
       stopping: false,
+      playbackRate: sourceWindow?.playbackRate ?? 1,
     };
+    if (sourceWindow?.offsetSeconds) {
+      this.state.phase = sourceWindow.offsetSeconds % motion._motionData.duration;
+      this.advanceFade(model, sourceWindow.offsetSeconds);
+    }
     return true;
   }
 
-  stop(model: CubismModel, fadeSeconds = 0): void {
+  stop(model: CubismModel, fadeSeconds = 0, sourceWindow?: NativeTimelineSourceWindow): void {
     if (!this.motion) return;
     if (!(fadeSeconds > 0)) {
       this.stopImmediately(model);
@@ -87,7 +107,9 @@ export class AdvCubismParameterLoop {
       fadeElapsed: 0,
       fadeDuration: fadeSeconds,
       stopping: true,
+      playbackRate: sourceWindow?.playbackRate ?? this.state.playbackRate,
     };
+    if (sourceWindow?.offsetSeconds) this.advanceFade(model, sourceWindow.offsetSeconds);
   }
 
   stopImmediately(model: CubismModel): void {
@@ -107,6 +129,12 @@ export class AdvCubismParameterLoop {
   /** Advance before the motion/parameter-store phase, including stop retirement. */
   advance(model: CubismModel, delta: number): void {
     if (!this.motion) return;
+    const elapsed = delta * this.state.playbackRate;
+    this.state.phase = (this.state.phase + elapsed) % this.motion._motionData.duration;
+    this.advanceFade(model, elapsed);
+  }
+
+  private advanceFade(model: CubismModel, delta: number): void {
     let elapsed = this.state.fadeElapsed;
     let weight = this.state.fadeTarget;
     if (elapsed < this.state.fadeDuration) {
@@ -114,7 +142,6 @@ export class AdvCubismParameterLoop {
       const progress = CubismMath.getEasingSine(elapsed / this.state.fadeDuration);
       weight = this.state.fadeStart + (this.state.fadeTarget - this.state.fadeStart) * progress;
     }
-    this.state.phase = (this.state.phase + delta) % this.motion._motionData.duration;
     this.state.fadeElapsed = elapsed;
     this.state.weight = weight;
     if (this.state.stopping && this.state.weight <= 0) this.stopImmediately(model);
@@ -145,7 +172,7 @@ export class AdvCubismParameterLoop {
     if (!targets) throw new Error(`cubism_parameter_loop_curves:${state.name}`);
     this.motion = motion;
     this.targets = targets;
-    this.state = { ...state };
+    this.state = { ...state, playbackRate: state.playbackRate ?? 1 };
     this.apply(model);
   }
 }

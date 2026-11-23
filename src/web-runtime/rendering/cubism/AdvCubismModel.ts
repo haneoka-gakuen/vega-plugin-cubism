@@ -138,6 +138,7 @@ interface CubismPlaybackRequest {
   readonly fadeInSeconds?: number;
   readonly positionSeconds?: number;
   readonly positionOptions?: AdvCubismMotionPositionOptions;
+  readonly loopWindow?: import("@haneoka/vega/renderer-kit").NativeTimelineSourceWindow;
 }
 
 function resolveResourceUrl(baseUrl: string, resource: string): string {
@@ -905,12 +906,17 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     return this.requestMotion(name, fadeInSeconds);
   }
 
-  playParameterLoopMotion(name: string, fadeInSeconds?: number): boolean {
+  playParameterLoopMotion(
+    name: string,
+    fadeInSeconds?: number,
+    sourceWindow?: CubismPlaybackRequest["loopWindow"],
+  ): boolean {
     if (!this.hasMotion(name)) return false;
     this.parameterLoopName = name;
     const request: CubismPlaybackRequest = {
       name,
       fadeInSeconds,
+      loopWindow: sourceWindow,
       sequence: ++this.parameterLoopRequestSequence,
     };
     this.requestedParameterLoop = request;
@@ -918,11 +924,12 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
   }
 
   /** Stop retires only the independent parameter channel. */
-  stopParameterLoopMotion(fadeSeconds?: number): void {
+  stopParameterLoopMotion(fadeSeconds?: number, sourceWindow?: CubismPlaybackRequest["loopWindow"]): void {
     this.parameterLoopName = null;
     const request: CubismPlaybackRequest = {
       name: "",
       fadeInSeconds: fadeSeconds,
+      loopWindow: sourceWindow,
       sequence: ++this.parameterLoopRequestSequence,
     };
     this.requestedParameterLoop = request;
@@ -938,7 +945,7 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     }
     if (this.activeParameterLoopSequence === request.sequence) return true;
     if (!request.name) {
-      this.parameterLoop.stop(this._model, request.fadeInSeconds);
+      this.parameterLoop.stop(this._model, request.fadeInSeconds, request.loopWindow);
       this.activeParameterLoopSequence = request.sequence;
       return true;
     }
@@ -947,7 +954,8 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
       void this.ensureMotion(request.name);
       return false;
     }
-    if (!this.parameterLoop.play(this._model, request.name, motion, request.fadeInSeconds)) return false;
+    if (!this.parameterLoop.play(this._model, request.name, motion, request.fadeInSeconds, request.loopWindow))
+      return false;
     this.activeParameterLoopSequence = request.sequence;
     return true;
   }
@@ -958,10 +966,12 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     return {
       kind: "cubism3-parameter-loop-v1",
       loop: this.parameterLoop.capture(),
-      pending: pending ? { name: pending.name, fadeInSeconds: pending.fadeInSeconds } : null,
+      pending: pending
+        ? { name: pending.name, fadeInSeconds: pending.fadeInSeconds, loopWindow: pending.loopWindow }
+        : null,
       request:
         !pending && request && request.sequence !== this.activeParameterLoopSequence
-          ? { name: request.name, fadeInSeconds: request.fadeInSeconds }
+          ? { name: request.name, fadeInSeconds: request.fadeInSeconds, loopWindow: request.loopWindow }
           : null,
     };
   }
@@ -1027,11 +1037,11 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     let rate = 1;
     let pending: Extract<CubismParameterLoopTimeline["events"][number], { kind: "loop" }> | null = null;
     const apply = (event: NonNullable<typeof pending>): void => {
-      if (!event.name) this.parameterLoop.stop(this._model, event.fadeSeconds);
+      if (!event.name) this.parameterLoop.stop(this._model, event.fadeSeconds, event.sourceWindow);
       else {
         const motion = this.motions.get(event.name);
         if (!motion) throw new Error(`cubism_parameter_loop_resource:${event.name}`);
-        this.parameterLoop.play(this._model, event.name, motion, event.fadeSeconds);
+        this.parameterLoop.play(this._model, event.name, motion, event.fadeSeconds, event.sourceWindow);
       }
     };
     for (const event of timeline.events) {
@@ -1057,7 +1067,12 @@ export class AdvCubismModel extends CubismUserModel implements StoryCharacterMod
     const state = this.parameterLoop.capture();
     this.parameterLoopName = state && !state.stopping ? state.name : null;
     if (pending) {
-      this.requestedParameterLoop = { name: pending.name, fadeInSeconds: pending.fadeSeconds, sequence };
+      this.requestedParameterLoop = {
+        name: pending.name,
+        fadeInSeconds: pending.fadeSeconds,
+        loopWindow: pending.sourceWindow,
+        sequence,
+      };
       this.pausedParameterLoopRequest.retain(this.requestedParameterLoop);
     }
     for (let index = 0; index < values.length; index++) this._model.setParameterValueByIndex(index, values[index]);
